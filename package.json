@@ -35,6 +35,7 @@
   },
   "build": {
     "appId": "com.lowcostrobotarm.control",
+    "publish": null,
     "productName": "Robotic Arm Control",
     "directories": { "output": "release" },
     "files": ["dist/**/*", "electron/**/*"],
