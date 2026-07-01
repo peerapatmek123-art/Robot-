@@ -23,6 +23,14 @@ import {
   X as WinClose,
   ChevronDown,
   Wifi,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  Repeat,
+  StopCircle,
+  Play,
+  ListPlus,
+  Target,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -132,51 +140,148 @@ function useArmScene(containerRef, joints, wireframe) {
     if (!container) return undefined;
 
     const scene = new THREE.Scene();
+
+    // ---- soft vertical gradient backdrop (deep navy -> panel color) ----------
+    const bgGeo = new THREE.SphereGeometry(28, 24, 16);
+    const bgPos = bgGeo.attributes.position;
+    const topCol = new THREE.Color(0x060810);
+    const botCol = new THREE.Color(0x161d38);
+    const bgColors = [];
+    for (let i = 0; i < bgPos.count; i++) {
+      const y = bgPos.getY(i) / 28; // -1..1
+      const t = THREE.MathUtils.clamp((y + 0.35) / 1.1, 0, 1);
+      const c = topCol.clone().lerp(botCol, 1 - t);
+      bgColors.push(c.r, c.g, c.b);
+    }
+    bgGeo.setAttribute("color", new THREE.Float32BufferAttribute(bgColors, 3));
+    const bgMesh = new THREE.Mesh(
+      bgGeo,
+      new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false })
+    );
+    scene.add(bgMesh);
     scene.background = new THREE.Color(C.panelAlt);
 
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    if (typeof THREE.sRGBEncoding !== "undefined") renderer.outputEncoding = THREE.sRGBEncoding;
     container.appendChild(renderer.domElement);
     renderer.domElement.style.display = "block";
     renderer.domElement.style.cursor = "grab";
 
     // lights
-    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
-    key.position.set(3, 5, 4);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const hemi = new THREE.HemisphereLight(0x8fa4ff, 0x0a0e1a, 0.35);
+    scene.add(hemi);
+    const key = new THREE.DirectionalLight(0xffffff, 1.05);
+    key.position.set(3.2, 5.5, 3.6);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.camera.near = 1;
+    key.shadow.camera.far = 14;
+    key.shadow.camera.left = -4;
+    key.shadow.camera.right = 4;
+    key.shadow.camera.top = 4;
+    key.shadow.camera.bottom = -4;
+    key.shadow.bias = -0.0015;
+    key.shadow.radius = 3;
     scene.add(key);
-    const rim = new THREE.DirectionalLight(0x3b6cf6, 0.35);
-    rim.position.set(-4, 2, -3);
+    const fill = new THREE.DirectionalLight(0xaebfff, 0.28);
+    fill.position.set(-3.5, 2.2, -1.5);
+    scene.add(fill);
+    const rim = new THREE.DirectionalLight(0x3b6cf6, 0.45);
+    rim.position.set(-4, 3, -4);
     scene.add(rim);
 
-    // floor grid
-    const grid = new THREE.GridHelper(8, 24, 0x27305a, 0x161c36);
+    // floor: soft shadow-catching disc + fine grid
+    const floor = new THREE.Mesh(
+      new THREE.CircleGeometry(4.4, 48),
+      new THREE.ShadowMaterial({ opacity: 0.38 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.001;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(8, 32, 0x2c3766, 0x161c36);
     grid.position.y = 0;
+    grid.material.opacity = 0.55;
+    grid.material.transparent = true;
     scene.add(grid);
     const axes = new THREE.AxesHelper(0.55);
     scene.add(axes);
 
     // ---- build arm hierarchy -------------------------------------------------
-    const armColor = 0xe7ebf5;
-    const jointColor = 0x1c2340;
+    const armColor = 0xeef1f8;
+    const jointColor = 0x14192e;
     const accentColor = 0x3b6cf6;
+    const darkTrim = 0x232a4c;
 
     function link(length, r0 = 0.11, r1 = 0.095, color = armColor) {
       const g = new THREE.Group();
-      const geo = new THREE.CylinderGeometry(r1, r0, length, 20);
-      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.45 });
+      const geo = new THREE.CylinderGeometry(r1, r0, length, 24);
+      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.32 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.y = length / 2;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       g.add(mesh);
       g.userData.mesh = mesh;
+
+      // twin trim rings (small dark bands) near each end of the link — echoes
+      // the segmented, "machined" look of the reference photo
+      const ringGeo = new THREE.TorusGeometry((r0 + r1) / 2 + 0.006, 0.014, 8, 20);
+      const ringMat = new THREE.MeshStandardMaterial({ color: darkTrim, metalness: 0.7, roughness: 0.3 });
+      const ringTop = new THREE.Mesh(ringGeo, ringMat);
+      ringTop.rotation.x = Math.PI / 2;
+      ringTop.position.y = length * 0.18;
+      ringTop.castShadow = true;
+      const ringBot = ringTop.clone();
+      ringBot.position.y = length * 0.82;
+      g.add(ringTop, ringBot);
       return g;
     }
-    function jointMesh(radius = 0.155, color = jointColor) {
-      const geo = new THREE.SphereGeometry(radius, 20, 20);
-      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.6, roughness: 0.25 });
+
+    // a joint "hub": dark sphere body + a thin accent equator ring + a ring of
+    // small bolt heads, similar to the collared joints in the reference photo
+    function jointMesh(radius = 0.155, color = jointColor, accent = false) {
+      const grp = new THREE.Group();
+      const geo = new THREE.SphereGeometry(radius, 24, 20);
+      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.72, roughness: 0.22 });
       const m = new THREE.Mesh(geo, mat);
-      return m;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      grp.add(m);
+
+      const eqGeo = new THREE.TorusGeometry(radius * 0.92, radius * 0.09, 10, 28);
+      const eqMat = new THREE.MeshStandardMaterial({
+        color: accent ? accentColor : 0x3a4270,
+        metalness: 0.5,
+        roughness: 0.35,
+        emissive: accent ? accentColor : 0x000000,
+        emissiveIntensity: accent ? 0.18 : 0,
+      });
+      const eq = new THREE.Mesh(eqGeo, eqMat);
+      eq.rotation.x = Math.PI / 2;
+      eq.castShadow = true;
+      grp.add(eq);
+
+      const boltCount = 6;
+      const boltGeo = new THREE.CylinderGeometry(radius * 0.1, radius * 0.1, radius * 0.12, 6);
+      const boltMat = new THREE.MeshStandardMaterial({ color: 0x080b16, metalness: 0.8, roughness: 0.35 });
+      for (let i = 0; i < boltCount; i++) {
+        const a = (i / boltCount) * Math.PI * 2;
+        const b = new THREE.Mesh(boltGeo, boltMat);
+        b.position.set(Math.cos(a) * radius * 0.78, Math.sin(a) * radius * 0.78, 0);
+        b.rotation.z = a;
+        b.rotation.x = Math.PI / 2;
+        b.castShadow = true;
+        eq.add(b);
+      }
+      grp.userData.mesh = m;
+      return grp;
     }
 
     const LEN = { base: 0.42, l1: 1.15, l2: 1.0, l3: 0.42, l4: 0.36, grip: 0.28 };
@@ -187,18 +292,39 @@ function useArmScene(containerRef, joints, wireframe) {
     // base (turret) — rotates on J1
     const baseGroup = new THREE.Group();
     root.add(baseGroup);
-    const baseMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.42, 0.46, LEN.base, 28),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.4 })
+
+    // wide foot plate for visual weight, like the reference model's stand
+    const footMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.56, 0.07, 32),
+      new THREE.MeshStandardMaterial({ color: 0x0e1326, metalness: 0.55, roughness: 0.4 })
     );
-    baseMesh.position.y = LEN.base / 2;
+    footMesh.position.y = 0.035;
+    footMesh.castShadow = true;
+    footMesh.receiveShadow = true;
+    baseGroup.add(footMesh);
+
+    const baseMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.4, 0.44, LEN.base, 32),
+      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
+    );
+    baseMesh.position.y = LEN.base / 2 + 0.07;
+    baseMesh.castShadow = true;
+    baseMesh.receiveShadow = true;
     baseGroup.add(baseMesh);
+
+    const baseCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.41, 0.41, 0.05, 32),
+      new THREE.MeshStandardMaterial({ color: darkTrim, metalness: 0.7, roughness: 0.3 })
+    );
+    baseCollar.position.y = LEN.base + 0.07 - 0.025;
+    baseCollar.castShadow = true;
+    baseGroup.add(baseCollar);
 
     // shoulder — J2
     const shoulder = new THREE.Group();
-    shoulder.position.y = LEN.base;
+    shoulder.position.y = LEN.base + 0.07;
     baseGroup.add(shoulder);
-    shoulder.add(jointMesh(0.19, accentColor));
+    shoulder.add(jointMesh(0.2, jointColor, true));
     const upperArm = link(LEN.l1);
     shoulder.add(upperArm);
 
@@ -206,7 +332,7 @@ function useArmScene(containerRef, joints, wireframe) {
     const elbow = new THREE.Group();
     elbow.position.y = LEN.l1;
     shoulder.add(elbow);
-    elbow.add(jointMesh(0.16));
+    elbow.add(jointMesh(0.165, jointColor, false));
     const foreArm = link(LEN.l2, 0.095, 0.08);
     elbow.add(foreArm);
 
@@ -214,7 +340,7 @@ function useArmScene(containerRef, joints, wireframe) {
     const wristRoll = new THREE.Group();
     wristRoll.position.y = LEN.l2;
     elbow.add(wristRoll);
-    wristRoll.add(jointMesh(0.125, accentColor));
+    wristRoll.add(jointMesh(0.13, jointColor, true));
     const wristLink1 = link(LEN.l3, 0.075, 0.065);
     wristRoll.add(wristLink1);
 
@@ -222,7 +348,7 @@ function useArmScene(containerRef, joints, wireframe) {
     const wristPitch = new THREE.Group();
     wristPitch.position.y = LEN.l3;
     wristRoll.add(wristPitch);
-    wristPitch.add(jointMesh(0.1));
+    wristPitch.add(jointMesh(0.105, jointColor, false));
     const wristLink2 = link(LEN.l4, 0.06, 0.05);
     wristPitch.add(wristLink2);
 
@@ -230,23 +356,36 @@ function useArmScene(containerRef, joints, wireframe) {
     const gripper = new THREE.Group();
     gripper.position.y = LEN.l4;
     wristPitch.add(gripper);
-    gripper.add(jointMesh(0.08, accentColor));
+    gripper.add(jointMesh(0.085, jointColor, true));
     const gripperBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.06, LEN.grip, 12),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.4 })
+      new THREE.CylinderGeometry(0.05, 0.065, LEN.grip, 16),
+      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
     );
     gripperBody.position.y = LEN.grip / 2;
+    gripperBody.castShadow = true;
+    gripperBody.receiveShadow = true;
     gripper.add(gripperBody);
-    const fingerGeo = new THREE.BoxGeometry(0.03, 0.14, 0.05);
-    const fingerMat = new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.3 });
-    const fingerL = new THREE.Mesh(fingerGeo, fingerMat);
-    const fingerR = new THREE.Mesh(fingerGeo, fingerMat);
-    fingerL.position.set(-0.06, LEN.grip + 0.07, 0);
-    fingerR.position.set(0.06, LEN.grip + 0.07, 0);
-    gripper.add(fingerL, fingerR);
+
+    // paddle-shaped fingers with dark rubberized tips, angled slightly inward
+    const fingerMat = new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.35 });
+    const tipMat = new THREE.MeshStandardMaterial({ color: 0x05070f, metalness: 0.2, roughness: 0.7 });
+    function makeFinger(sign) {
+      const f = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.12, 0.055), fingerMat);
+      body.position.y = 0.06;
+      body.castShadow = true;
+      const tip = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.035, 0.06), tipMat);
+      tip.position.y = 0.125;
+      tip.castShadow = true;
+      f.add(body, tip);
+      f.position.set(sign * 0.062, LEN.grip, 0);
+      f.rotation.z = sign * -0.09;
+      return f;
+    }
+    gripper.add(makeFinger(-1), makeFinger(1));
 
     const endEffector = new THREE.Object3D();
-    endEffector.position.y = LEN.grip + 0.14;
+    endEffector.position.y = LEN.grip + 0.16;
     gripper.add(endEffector);
 
     // simple orbit controller state (no OrbitControls in this three build)
@@ -325,10 +464,18 @@ function useArmScene(containerRef, joints, wireframe) {
     }
     tick();
 
+    // collect every mesh under the arm root so wireframe toggling (and any
+    // future material tweaks) reliably reach the whole model, including the
+    // bolts/rings added inside jointMesh()
+    const allMeshes = [];
+    root.traverse((obj) => {
+      if (obj.isMesh) allMeshes.push(obj);
+    });
+
     sceneRef.current = {
       scene, camera, renderer, controls,
       baseGroup, shoulder, elbow, wristRoll, wristPitch, gripper, endEffector,
-      allMeshes: [baseMesh, upperArm.userData.mesh, foreArm.userData.mesh, wristLink1.userData.mesh, wristLink2.userData.mesh, gripperBody, fingerL, fingerR],
+      allMeshes,
     };
 
     return () => {
@@ -475,6 +622,8 @@ function JointControl({ label, sub, value, onChange, disabled }) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
+const WAYPOINTS_STORAGE_KEY = "robotArm.waypoints.v1";
+
 export default function RoboticArmControl() {
   const [activeTab, setActiveTab] = useState("manual");
   const [joints, setJoints] = useState(HOME);
@@ -486,6 +635,35 @@ export default function RoboticArmControl() {
   const [ports, setPorts] = useState(["COM3"]);
   const [selectedPort, setSelectedPort] = useState("COM3");
   const [connected, setConnected] = useState(true);
+
+  // ---------------- Record & Playback -------------------------------------
+  const [waypoints, setWaypoints] = useState(() => {
+    try {
+      const raw = window.localStorage?.getItem(WAYPOINTS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [waypointName, setWaypointName] = useState("");
+  const [playing, setPlaying] = useState(false);
+  const [playIndex, setPlayIndex] = useState(-1);
+  const [playProgress, setPlayProgress] = useState(0); // 0..1 within current step
+  const [loopPlayback, setLoopPlayback] = useState(false);
+  const cancelPlaybackRef = useRef(false);
+  const loopRef = useRef(false);
+  const speedRef = useRef(60);
+
+  useEffect(() => { loopRef.current = loopPlayback; }, [loopPlayback]);
+  useEffect(() => { speedRef.current = speed; }, [speed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem(WAYPOINTS_STORAGE_KEY, JSON.stringify(waypoints));
+    } catch {
+      /* ignore quota / privacy-mode errors */
+    }
+  }, [waypoints]);
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง (ดู electron/preload.js)
   // ถ้ารันในเบราว์เซอร์ธรรมดา (เช่นตอน dev ด้วย `npm run dev`) จะ mock พอร์ตไว้ให้แทน
@@ -545,15 +723,135 @@ export default function RoboticArmControl() {
     setTimeout(() => setToast(""), 1800);
   };
 
-  const handleSave = () => showToast("บันทึกตำแหน่งปัจจุบันแล้ว");
+  // add the current joint pose as a new waypoint in the Record & Playback list
+  const addWaypoint = useCallback((customName) => {
+    setWaypoints((prev) => {
+      const name = (customName && customName.trim()) || `ท่าที่ ${prev.length + 1}`;
+      const wp = {
+        id: `wp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name,
+        joints: { ...joints },
+        createdAt: Date.now(),
+      };
+      return [...prev, wp];
+    });
+    setWaypointName("");
+  }, [joints]);
+
+  const handleSave = () => {
+    addWaypoint(waypointName);
+    showToast("บันทึกตำแหน่งนี้ลงใน Record & Playback แล้ว");
+  };
   const handleHome = () => {
     if (estopped) return;
     setJoints(HOME);
     showToast("กลับสู่ตำแหน่งเริ่มต้นแล้ว");
   };
   const handleStop = () => {
+    if (!estopped && playing) {
+      cancelPlaybackRef.current = true;
+      setPlaying(false);
+      setPlayIndex(-1);
+      setPlayProgress(0);
+    }
     setEstopped((v) => !v);
     showToast(estopped ? "กลับมาทำงานตามปกติ" : "หยุดการทำงานฉุกเฉิน");
+  };
+
+  const deleteWaypoint = (id) => {
+    setWaypoints((prev) => prev.filter((w) => w.id !== id));
+  };
+
+  const moveWaypoint = (id, dir) => {
+    setWaypoints((prev) => {
+      const idx = prev.findIndex((w) => w.id === id);
+      const next = idx + dir;
+      if (idx < 0 || next < 0 || next >= prev.length) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[next]] = [copy[next], copy[idx]];
+      return copy;
+    });
+  };
+
+  const jumpToWaypoint = (wp) => {
+    if (estopped) return;
+    setJoints(wp.joints);
+    showToast(`ไปยัง "${wp.name}" แล้ว`);
+  };
+
+  const stopPlayback = () => {
+    cancelPlaybackRef.current = true;
+    setPlaying(false);
+    setPlayIndex(-1);
+    setPlayProgress(0);
+    showToast("หยุดการเล่นท่าทาง");
+  };
+
+  const easeInOut = (p) => (p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2);
+
+  // plays a sequence of waypoints in order, interpolating smoothly between
+  // each recorded pose; honors the global speed slider and the loop toggle
+  const playSequence = useCallback(async (list, startIndex = 0) => {
+    if (!list.length) {
+      showToast("ยังไม่มีท่าทางที่บันทึกไว้");
+      return;
+    }
+    if (estopped) {
+      showToast("ยกเลิกหยุดฉุกเฉินก่อนเล่นท่าทาง");
+      return;
+    }
+    cancelPlaybackRef.current = false;
+    setPlaying(true);
+    setActiveTab("manual");
+
+    let current = { ...joints };
+    let keepGoing = true;
+    while (keepGoing && !cancelPlaybackRef.current) {
+      for (let i = startIndex; i < list.length; i++) {
+        if (cancelPlaybackRef.current) break;
+        setPlayIndex(i);
+        setPlayProgress(0);
+        const target = list[i].joints;
+        const spd = Math.max(10, speedRef.current);
+        const duration = Math.max(350, 2400 * (100 / spd));
+        const t0 = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => {
+          function step(now) {
+            if (cancelPlaybackRef.current) { resolve(); return; }
+            const elapsed = now - t0;
+            const p = Math.min(1, elapsed / duration);
+            const eased = easeInOut(p);
+            const next = {};
+            JOINTS.forEach((j) => {
+              next[j.key] = current[j.key] + (target[j.key] - current[j.key]) * eased;
+            });
+            setJoints(next);
+            setPlayProgress(p);
+            if (p < 1) requestAnimationFrame(step);
+            else resolve();
+          }
+          requestAnimationFrame(step);
+        });
+        current = target;
+        if (cancelPlaybackRef.current) break;
+        // brief settle pause at each waypoint
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      startIndex = 0;
+      keepGoing = loopRef.current && !cancelPlaybackRef.current;
+    }
+
+    setPlaying(false);
+    setPlayIndex(-1);
+    setPlayProgress(0);
+  }, [joints, estopped]);
+
+  const playAll = () => playSequence(waypoints, 0);
+  const playFrom = (id) => {
+    const idx = waypoints.findIndex((w) => w.id === id);
+    if (idx >= 0) playSequence(waypoints, idx);
   };
 
   const dateStr = `วันที่ ${now.getDate()} ${THAI_MONTHS[now.getMonth()]} ${now.getFullYear() + 543}`;
@@ -827,17 +1125,177 @@ export default function RoboticArmControl() {
           )}
 
           {activeTab === "record" && (
-            <div className="h-full flex items-center justify-center">
-              <div className="text-center max-w-sm">
-                <div className="w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center" style={{ background: C.accentSoft }}>
-                  <PlayCircle size={26} color={C.accent} />
-                </div>
-                <h2 className="text-lg font-semibold mb-1.5" style={{ color: C.text }}>Record &amp; Playback</h2>
-                <p className="text-sm" style={{ color: C.sub }}>
-                  โหมดบันทึกและเล่นท่าทางอัตโนมัติอยู่ระหว่างการพัฒนา — บันทึกตำแหน่งจากแท็บ Manual Control ไว้ก่อนได้เลยครับ
-                </p>
+            <>
+              <div className="mb-4">
+                <h1 className="text-xl font-semibold" style={{ color: C.text }}>Record &amp; Playback</h1>
+                <p className="text-xs mt-0.5" style={{ color: C.sub }}>บันทึกและเล่นท่าทางอัตโนมัติ</p>
               </div>
-            </div>
+
+              <div className="flex gap-4 items-start flex-wrap xl:flex-nowrap">
+                {/* left column: capture + playback settings */}
+                <div className="w-full xl:w-80 shrink-0 flex flex-col gap-4">
+                  <Panel>
+                    <PanelHeader title="บันทึกท่าทางปัจจุบัน" sub="บันทึกมุมข้อต่อทั้ง 6 แกน ณ ตำแหน่งปัจจุบัน" />
+                    <div className="px-5 pb-5 flex flex-col gap-3">
+                      <input
+                        value={waypointName}
+                        onChange={(e) => setWaypointName(e.target.value)}
+                        placeholder={`ท่าที่ ${waypoints.length + 1}`}
+                        className="w-full rounded-lg px-3 py-2.5 text-sm outline-none"
+                        style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
+                      />
+                      <button
+                        onClick={() => { addWaypoint(waypointName); showToast("เพิ่มท่าทางลงรายการแล้ว"); }}
+                        disabled={estopped}
+                        className="h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-medium"
+                        style={{ background: C.accent, color: "#fff", opacity: estopped ? 0.5 : 1 }}
+                      >
+                        <ListPlus size={15} /> เพิ่มเป็นท่าทางใหม่
+                      </button>
+                      <p className="text-[11px] leading-relaxed" style={{ color: C.subDim }}>
+                        เคล็ดลับ: ปรับมุมข้อต่อในแท็บ Manual Control แล้วกด &quot;บันทึกตำแหน่งนี้&quot; ก็จะถูกเพิ่มเข้ามาที่นี่โดยอัตโนมัติ
+                      </p>
+                    </div>
+                  </Panel>
+
+                  <Panel>
+                    <PanelHeader title="การเล่นท่าทาง" />
+                    <div className="px-5 pb-5 flex flex-col gap-3">
+                      <div className="flex items-center justify-between rounded-lg px-3 py-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
+                        <span className="text-xs" style={{ color: C.sub }}>ความเร็วเล่น (ใช้ค่าจาก Manual Control)</span>
+                        <span className="text-sm font-mono" style={{ color: C.text }}>{speed}%</span>
+                      </div>
+                      <button
+                        onClick={() => setLoopPlayback((v) => !v)}
+                        className="flex items-center justify-between rounded-lg px-3 py-2.5 text-sm"
+                        style={{
+                          background: loopPlayback ? C.accentSoft : C.panelAlt,
+                          border: `1px solid ${loopPlayback ? C.accent : C.borderSoft}`,
+                          color: loopPlayback ? C.accent : C.text,
+                        }}
+                      >
+                        <span className="flex items-center gap-2"><Repeat size={15} /> เล่นวนซ้ำ</span>
+                        <span
+                          className="w-9 h-5 rounded-full relative transition-colors"
+                          style={{ background: loopPlayback ? C.accent : C.track }}
+                        >
+                          <span
+                            className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                            style={{ left: loopPlayback ? 18 : 2 }}
+                          />
+                        </span>
+                      </button>
+
+                      {!playing ? (
+                        <button
+                          onClick={playAll}
+                          disabled={estopped || waypoints.length === 0}
+                          className="h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-medium"
+                          style={{ background: C.green, color: "#fff", opacity: estopped || waypoints.length === 0 ? 0.5 : 1 }}
+                        >
+                          <Play size={15} fill="#fff" /> เล่นทั้งหมด ({waypoints.length} ท่า)
+                        </button>
+                      ) : (
+                        <button
+                          onClick={stopPlayback}
+                          className="h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-medium"
+                          style={{ background: C.red, color: "#fff" }}
+                        >
+                          <StopCircle size={15} /> หยุดเล่น
+                        </button>
+                      )}
+
+                      {playing && playIndex >= 0 && waypoints[playIndex] && (
+                        <div className="rounded-lg px-3 py-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
+                          <div className="flex items-center justify-between text-xs mb-1.5">
+                            <span style={{ color: C.sub }}>กำลังเล่น</span>
+                            <span style={{ color: C.text }} className="font-medium">
+                              {playIndex + 1} / {waypoints.length} · {waypoints[playIndex].name}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.track }}>
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${Math.round(playProgress * 100)}%`, background: C.accent, transition: "width 60ms linear" }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </Panel>
+                </div>
+
+                {/* right column: waypoint list */}
+                <Panel className="flex-1 min-w-[380px]">
+                  <div className="flex items-center justify-between px-5 pt-4 pb-2">
+                    <div>
+                      <div className="text-[15px] font-semibold" style={{ color: C.text }}>รายการท่าทางที่บันทึกไว้</div>
+                      <div className="text-xs mt-0.5" style={{ color: C.sub }}>{waypoints.length} ท่าทาง — เรียงตามลำดับการเล่น</div>
+                    </div>
+                  </div>
+                  <div className="px-5 pb-5">
+                    {waypoints.length === 0 ? (
+                      <div className="rounded-xl py-10 flex flex-col items-center gap-2 text-center" style={{ background: C.panelAlt, border: `1px dashed ${C.borderSoft}` }}>
+                        <PlayCircle size={22} color={C.subDim} />
+                        <div className="text-sm" style={{ color: C.sub }}>ยังไม่มีท่าทางที่บันทึกไว้</div>
+                        <div className="text-xs" style={{ color: C.subDim }}>เพิ่มท่าแรกได้จากช่องด้านซ้าย</div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {waypoints.map((wp, i) => {
+                          const isPlaying = playing && playIndex === i;
+                          return (
+                            <div
+                              key={wp.id}
+                              className="flex items-center gap-3 rounded-xl px-3.5 py-3"
+                              style={{
+                                background: isPlaying ? C.accentSoft : C.panelAlt,
+                                border: `1px solid ${isPlaying ? C.accent : C.borderSoft}`,
+                              }}
+                            >
+                              <div
+                                className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold tabular-nums"
+                                style={{ background: isPlaying ? C.accent : C.panel, color: isPlaying ? "#fff" : C.sub, border: `1px solid ${C.borderSoft}` }}
+                              >
+                                {i + 1}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium truncate" style={{ color: C.text }}>{wp.name}</div>
+                                <div className="text-[11px] font-mono truncate" style={{ color: C.subDim }}>
+                                  J1 {wp.joints.j1.toFixed(0)}° · J2 {wp.joints.j2.toFixed(0)}° · J3 {wp.joints.j3.toFixed(0)}° · J4 {wp.joints.j4.toFixed(0)}° · J5 {wp.joints.j5.toFixed(0)}° · J6 {wp.joints.j6.toFixed(0)}°
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button title="ย้ายขึ้น" onClick={() => moveWaypoint(wp.id, -1)} disabled={i === 0}
+                                  className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: i === 0 ? C.subDim : C.sub, opacity: i === 0 ? 0.4 : 1 }}>
+                                  <ArrowUp size={14} />
+                                </button>
+                                <button title="ย้ายลง" onClick={() => moveWaypoint(wp.id, 1)} disabled={i === waypoints.length - 1}
+                                  className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: i === waypoints.length - 1 ? C.subDim : C.sub, opacity: i === waypoints.length - 1 ? 0.4 : 1 }}>
+                                  <ArrowDown size={14} />
+                                </button>
+                                <button title="ไปยังตำแหน่งนี้" onClick={() => jumpToWaypoint(wp)} disabled={estopped || playing}
+                                  className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.sub, opacity: estopped || playing ? 0.4 : 1 }}>
+                                  <Target size={14} />
+                                </button>
+                                <button title="เล่นจากท่านี้" onClick={() => playFrom(wp.id)} disabled={estopped || playing}
+                                  className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.accent, opacity: estopped || playing ? 0.4 : 1 }}>
+                                  <Play size={14} />
+                                </button>
+                                <button title="ลบ" onClick={() => deleteWaypoint(wp.id)} disabled={playing}
+                                  className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.red, opacity: playing ? 0.4 : 1 }}>
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </div>
+            </>
           )}
 
           {activeTab === "status" && (
@@ -938,10 +1396,44 @@ export default function RoboticArmControl() {
         <span className="flex items-center gap-1.5"><CalendarDays size={13} /> {dateStr}</span>
       </div>
 
+      {/* persistent "now playing" bar — visible on any tab while a sequence runs */}
+      {playing && playIndex >= 0 && waypoints[playIndex] && (
+        <div
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[min(92vw,420px)] rounded-2xl px-4 py-3 shadow-2xl flex items-center gap-3"
+          style={{ background: C.panel, border: `1px solid ${C.accent}` }}
+        >
+          <div className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center" style={{ background: C.accentSoft }}>
+            <PlayCircle size={16} color={C.accent} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span className="truncate font-medium" style={{ color: C.text }}>
+                กำลังเล่น: {waypoints[playIndex].name}
+              </span>
+              <span className="shrink-0 ml-2" style={{ color: C.subDim }}>{playIndex + 1}/{waypoints.length}</span>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.track }}>
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${Math.round(playProgress * 100)}%`, background: C.accent, transition: "width 60ms linear" }}
+              />
+            </div>
+          </div>
+          <button
+            onClick={stopPlayback}
+            className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center"
+            style={{ background: C.redSoft, color: C.red }}
+            title="หยุดเล่น"
+          >
+            <StopCircle size={16} />
+          </button>
+        </div>
+      )}
+
       {/* toast */}
       {toast && (
         <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg"
+          className={`fixed left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg ${playing ? "bottom-24" : "bottom-6"}`}
           style={{ background: C.accent, color: "#fff" }}
         >
           {toast}
