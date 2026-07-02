@@ -54,6 +54,8 @@ ipcMain.handle("serial:list", async () => {
 
 ipcMain.handle("serial:connect", async (event, portName) => {
   // activePort = new SerialPort({ path: portName, baudRate: 115200 });
+  // ตัวอย่างเมื่อใช้ของจริง: รอ event "open" ของ SerialPort แล้วค่อย resolve ok: true
+  // เพื่อให้ฝั่ง renderer ทราบสถานะการเชื่อมต่อที่แท้จริง ไม่ใช่แค่ตั้งค่าตัวแปรไว้เฉยๆ
   activePort = portName;
   return { ok: true, port: portName };
 });
@@ -62,6 +64,14 @@ ipcMain.handle("serial:disconnect", async () => {
   // if (activePort) activePort.close();
   activePort = null;
   return { ok: true };
+});
+
+// ---- IPC: ตรวจสอบสถานะการเชื่อมต่อจริง ----
+// เมื่อเปลี่ยนไปใช้ไลบรารี "serialport" จริง ให้เปลี่ยนเงื่อนไขนี้เป็นการเช็ค
+// activePort?.isOpen แทนการเช็คว่ามีชื่อพอร์ตถูกตั้งไว้หรือไม่ เพื่อให้สะท้อนสถานะ
+// ฮาร์ดแวร์จริง ไม่ใช่แค่ค่าที่ผู้ใช้เคยกดเชื่อมต่อไว้
+ipcMain.handle("serial:status", async () => {
+  return { connected: activePort !== null, port: activePort };
 });
 
 ipcMain.handle("serial:send", async (event, data) => {
