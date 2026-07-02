@@ -1409,7 +1409,6 @@ export default function RoboticArmControl() {
             </div>
           </div>
         </div>
-      </div>
 
       {/* ---------------- Footer ---------------- */}
       <div
