@@ -18,9 +18,6 @@ import {
   Plus,
   Clock,
   CalendarDays,
-  Minus as WinMin,
-  Square as WinMax,
-  X as WinClose,
   ChevronDown,
   Wifi,
   Trash2,
@@ -634,7 +631,8 @@ export default function RoboticArmControl() {
   const [toast, setToast] = useState("");
   const [ports, setPorts] = useState(["COM3"]);
   const [selectedPort, setSelectedPort] = useState("COM3");
-  const [connected, setConnected] = useState(true);
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   // ---------------- Record & Playback -------------------------------------
   const [waypoints, setWaypoints] = useState(() => {
@@ -678,19 +676,53 @@ export default function RoboticArmControl() {
     }
   }, []);
 
-  const toggleConnection = () => {
-    if (window.electronAPI?.connectPort) {
-      if (connected) {
-        window.electronAPI.disconnectPort();
-        setConnected(false);
-      } else {
-        window.electronAPI.connectPort(selectedPort);
-        setConnected(true);
-      }
-    } else {
-      setConnected((v) => !v);
+  // เชื่อมต่อจริงผ่าน window.electronAPI แล้วตรวจสอบสถานะกลับมาแทนการเดา/ตั้งค่าเอง
+  // ถ้าไม่ได้รันในแอป Electron (เช่น `npm run dev` ในเบราว์เซอร์เฉยๆ) จะไม่มีทางเชื่อมต่อ
+  // ฮาร์ดแวร์จริงได้ สถานะจะแสดง "ไม่ได้เชื่อมต่อ" ตามจริง แทนที่จะหลอกว่าเชื่อมต่อแล้ว
+  const attemptConnect = useCallback(async (portName) => {
+    if (!window.electronAPI?.connectPort) {
+      setConnected(false);
+      return;
     }
+    setConnecting(true);
+    try {
+      const res = await window.electronAPI.connectPort(portName);
+      setConnected(!!res?.ok);
+    } catch {
+      setConnected(false);
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
+  const checkConnectionStatus = useCallback(async () => {
+    if (!window.electronAPI?.getStatus) {
+      setConnected(false);
+      return;
+    }
+    try {
+      const res = await window.electronAPI.getStatus();
+      setConnected(!!res?.connected);
+    } catch {
+      setConnected(false);
+    }
+  }, []);
+
+  // ปุ่มสถานะไม่สามารถกดสลับเองได้อีกต่อไป — กดได้แค่ตอน "ไม่ได้เชื่อมต่อ" เพื่อลองเชื่อมต่อใหม่
+  const handleRetryConnection = () => {
+    if (!connected && !connecting) attemptConnect(selectedPort);
   };
+
+  // เชื่อมต่ออัตโนมัติเมื่อเปลี่ยนพอร์ต แล้วตรวจสอบสถานะจริงซ้ำเป็นระยะ เพื่อให้ตัวบ่งชี้
+  // สะท้อนการเชื่อมต่อฮาร์ดแวร์จริง ไม่ใช่แค่ค่าที่เคยตั้งไว้ครั้งเดียว
+  useEffect(() => {
+    attemptConnect(selectedPort);
+  }, [selectedPort, attemptConnect]);
+
+  useEffect(() => {
+    const id = setInterval(checkConnectionStatus, 4000);
+    return () => clearInterval(id);
+  }, [checkConnectionStatus]);
   const [now, setNow] = useState(new Date());
   const [telemetry, setTelemetry] = useState({ voltage: 12.0, temp: 36.2, fps: 60 });
 
@@ -881,16 +913,21 @@ export default function RoboticArmControl() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={toggleConnection}
+            onClick={handleRetryConnection}
+            disabled={connected || connecting}
+            title={!connected ? "คลิกเพื่อลองเชื่อมต่อใหม่" : undefined}
             className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs"
-            style={{ background: !connected ? C.redSoft : estopped ? C.redSoft : "rgba(34,197,94,0.12)" }}
+            style={{
+              background: !connected ? C.redSoft : estopped ? C.redSoft : "rgba(34,197,94,0.12)",
+              cursor: !connected && !connecting ? "pointer" : "default",
+            }}
           >
             <span
               className="w-1.5 h-1.5 rounded-full"
               style={{ background: !connected ? C.red : estopped ? C.red : C.green }}
             />
             <span style={{ color: !connected ? C.red : estopped ? C.red : C.green }}>
-              {!connected ? "ไม่ได้เชื่อมต่อ" : estopped ? "หยุดฉุกเฉิน" : "เชื่อมต่อแล้ว"}
+              {connecting ? "กำลังเชื่อมต่อ..." : !connected ? "ไม่ได้เชื่อมต่อ" : estopped ? "หยุดฉุกเฉิน" : "เชื่อมต่อแล้ว"}
             </span>
           </button>
 
@@ -910,18 +947,6 @@ export default function RoboticArmControl() {
               ))}
             </select>
             <ChevronDown size={13} color={C.subDim} className="pointer-events-none absolute right-2.5" />
-          </div>
-
-          <div className="flex items-center gap-1.5 pl-2" style={{ borderLeft: `1px solid ${C.border}` }}>
-            <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.subDim }}>
-              <WinMin size={14} />
-            </div>
-            <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.subDim }}>
-              <WinMax size={13} />
-            </div>
-            <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ color: C.subDim }}>
-              <WinClose size={14} />
-            </div>
           </div>
         </div>
       </div>
@@ -958,7 +983,7 @@ export default function RoboticArmControl() {
 
         {/* ---------------- Main ---------------- */}
         <div className="flex-1 min-w-0 p-5 overflow-auto">
-          {activeTab === "manual" && (
+          <div style={{ display: activeTab === "manual" ? "block" : "none" }}>
             <>
               <div className="mb-4">
                 <h1 className="text-xl font-semibold" style={{ color: C.text }}>Manual Control</h1>
@@ -1122,9 +1147,9 @@ export default function RoboticArmControl() {
                 </Panel>
               </div>
             </>
-          )}
+          </div>
 
-          {activeTab === "record" && (
+          <div style={{ display: activeTab === "record" ? "block" : "none" }}>
             <>
               <div className="mb-4">
                 <h1 className="text-xl font-semibold" style={{ color: C.text }}>Record &amp; Playback</h1>
@@ -1296,9 +1321,9 @@ export default function RoboticArmControl() {
                 </Panel>
               </div>
             </>
-          )}
+          </div>
 
-          {activeTab === "status" && (
+          <div style={{ display: activeTab === "status" ? "block" : "none" }}>
             <>
               <div className="mb-4">
                 <h1 className="text-xl font-semibold" style={{ color: C.text }}>System Status</h1>
@@ -1344,11 +1369,10 @@ export default function RoboticArmControl() {
                 </Panel>
               </div>
             </>
-          )}
+          </div>
 
-          {activeTab === "about" && (
-            <div className="max-w-2xl">
-              <div className="mb-4">
+          <div className="max-w-2xl" style={{ display: activeTab === "about" ? "block" : "none" }}>
+            <div className="mb-4">
                 <h1 className="text-xl font-semibold" style={{ color: C.text }}>About Program</h1>
                 <p className="text-xs mt-0.5" style={{ color: C.sub }}>เกี่ยวกับโปรแกรม</p>
               </div>
@@ -1383,7 +1407,7 @@ export default function RoboticArmControl() {
                 </div>
               </Panel>
             </div>
-          )}
+          </div>
         </div>
       </div>
 
