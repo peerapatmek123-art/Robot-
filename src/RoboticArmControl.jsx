@@ -14,6 +14,7 @@ import {
   Save,
   RotateCcw,
   Square,
+  Send,
   Minus,
   Plus,
   Clock,
@@ -723,6 +724,43 @@ export default function RoboticArmControl() {
     const id = setInterval(checkConnectionStatus, 4000);
     return () => clearInterval(id);
   }, [checkConnectionStatus]);
+
+  // ฟังข้อความจาก ESP32 (ack / telemetry / disconnected) ที่ main.js forward มาให้
+  // แบบ real-time ผ่าน IPC — ตอนนี้ใช้แค่รีเช็คสถานะทันทีเมื่อพอร์ตหลุดกะทันหัน
+  useEffect(() => {
+    if (!window.electronAPI?.onSerialData) return undefined;
+    const unsubscribe = window.electronAPI.onSerialData((msg) => {
+      if (msg?.type === "disconnected") {
+        setConnected(false);
+      }
+      // msg?.type === "ack" หรือ "telemetry" — จุดต่อยอดสำหรับอนาคต เช่น
+      // อัปเดตแรงดันไฟ/อุณหภูมิในแท็บ System Status จากข้อมูลจริงของบอร์ด
+    });
+    return unsubscribe;
+  }, []);
+
+  // ส่งมุมข้อต่อปัจจุบันออกไปยัง ESP32 จริงผ่าน Serial (โปรโตคอล JSON บรรทัดเดียว
+  // ดูรายละเอียดที่คอมเมนต์ใน electron/main.js)
+  const handleSendToBoard = async () => {
+    if (!window.electronAPI?.sendJointAngles) {
+      showToast("ฟีเจอร์นี้ใช้ได้เฉพาะเมื่อรันผ่านแอป Electron เท่านั้น");
+      return;
+    }
+    if (!connected) {
+      showToast("ยังไม่ได้เชื่อมต่อพอร์ต — เชื่อมต่อก่อนส่งค่า");
+      return;
+    }
+    try {
+      const res = await window.electronAPI.sendJointAngles(joints);
+      if (res?.ok) {
+        showToast(res.mock ? "ส่งค่าแล้ว (โหมดจำลอง — ยังไม่มีฮาร์ดแวร์จริง)" : "ส่งค่าไปยังบอร์ดแล้ว");
+      } else {
+        showToast(`ส่งค่าไม่สำเร็จ: ${res?.error ?? "ไม่ทราบสาเหตุ"}`);
+      }
+    } catch (err) {
+      showToast(`ส่งค่าไม่สำเร็จ: ${err.message}`);
+    }
+  };
   const [now, setNow] = useState(new Date());
   const [telemetry, setTelemetry] = useState({ voltage: 12.0, temp: 36.2, fps: 60 });
 
@@ -1098,6 +1136,15 @@ export default function RoboticArmControl() {
                     </div>
 
                     <div className="flex flex-wrap gap-3 mt-4">
+                      <button
+                        onClick={handleSendToBoard}
+                        disabled={estopped || !connected}
+                        className="flex-1 min-w-[160px] h-11 rounded-xl flex items-center justify-center gap-2 text-sm font-medium"
+                        style={{ background: C.green, color: "#fff", opacity: estopped || !connected ? 0.5 : 1 }}
+                        title={!connected ? "ยังไม่ได้เชื่อมต่อพอร์ต" : "ส่งมุมข้อต่อปัจจุบันไปยัง ESP32"}
+                      >
+                        <Send size={15} /> ส่งค่าไปยังบอร์ด
+                      </button>
                       <button
                         onClick={handleSave}
                         disabled={estopped}
