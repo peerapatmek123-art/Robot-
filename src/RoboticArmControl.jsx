@@ -53,16 +53,23 @@ const C = {
   track: "#1a2140",
 };
 
+// ---------------------------------------------------------------------------
+// 5-DOF Arm configuration
+// J1 = ฐาน (หมุน 360° N20 AB Encoder, soft-limit -180..+180)
+// J2 = ไหล่ (ขึ้น-ลง)
+// J3 = ข้อศอก (ขึ้น-ลง)
+// J4 = ข้อมือ (ขึ้น-ลง)
+// J5 = ปลายจับ / Gripper (เปิด-ปิด symmetric, 0=ปิดสนิท..100=เปิดสุด %)
+// ---------------------------------------------------------------------------
 const JOINTS = [
-  { key: "j1", label: "J1", sub: "ฐาน" },
-  { key: "j2", label: "J2", sub: "ไหล่" },
-  { key: "j3", label: "J3", sub: "ข้อศอก" },
-  { key: "j4", label: "J4", sub: "ข้อมือ 1" },
-  { key: "j5", label: "J5", sub: "ข้อมือ 2" },
-  { key: "j6", label: "J6", sub: "ข้อมือ 3 / จับ" },
+  { key: "j1", label: "J1", sub: "ฐาน (หมุน)", min: -180, max: 180, unit: "deg" },
+  { key: "j2", label: "J2", sub: "ไหล่", min: -90, max: 90, unit: "deg" },
+  { key: "j3", label: "J3", sub: "ข้อศอก", min: -135, max: 135, unit: "deg" },
+  { key: "j4", label: "J4", sub: "ข้อมือ", min: -135, max: 135, unit: "deg" },
+  { key: "j5", label: "J5", sub: "ปลายจับ (เปิด/ปิด)", min: 0, max: 100, unit: "%" },
 ];
 
-const HOME = { j1: 0, j2: 10, j3: 15, j4: 30, j5: 20, j6: 0 };
+const HOME = { j1: 0, j2: 0, j3: 0, j4: 0, j5: 0 };
 
 const THAI_MONTHS = [
   "มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
@@ -282,16 +289,17 @@ function useArmScene(containerRef, joints, wireframe) {
       return grp;
     }
 
-    const LEN = { base: 0.42, l1: 1.15, l2: 1.0, l3: 0.42, l4: 0.36, grip: 0.28 };
+    // --------------- 5-DOF arm dimensions (in Three.js units, ~1 unit = 100mm) ---------------
+    const LEN = { base: 0.42, l1: 1.05, l2: 0.90, l3: 0.60, grip: 0.26 };
+    // J1 = base yaw, J2 = shoulder pitch, J3 = elbow pitch, J4 = wrist pitch, J5 = gripper %
 
     const root = new THREE.Group();
     scene.add(root);
 
-    // base (turret) — rotates on J1
+    // ---- Base / J1 (หมุน N20 AB Encoder รอบแกน Y) ----
     const baseGroup = new THREE.Group();
     root.add(baseGroup);
 
-    // wide foot plate for visual weight, like the reference model's stand
     const footMesh = new THREE.Mesh(
       new THREE.CylinderGeometry(0.5, 0.56, 0.07, 32),
       new THREE.MeshStandardMaterial({ color: 0x0e1326, metalness: 0.55, roughness: 0.4 })
@@ -306,8 +314,7 @@ function useArmScene(containerRef, joints, wireframe) {
       new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
     );
     baseMesh.position.y = LEN.base / 2 + 0.07;
-    baseMesh.castShadow = true;
-    baseMesh.receiveShadow = true;
+    baseMesh.castShadow = true; baseMesh.receiveShadow = true;
     baseGroup.add(baseMesh);
 
     const baseCollar = new THREE.Mesh(
@@ -318,15 +325,15 @@ function useArmScene(containerRef, joints, wireframe) {
     baseCollar.castShadow = true;
     baseGroup.add(baseCollar);
 
-    // shoulder — J2
+    // ---- Shoulder / J2 (pitch ขึ้น-ลง รอบแกน Z) ----
     const shoulder = new THREE.Group();
     shoulder.position.y = LEN.base + 0.07;
     baseGroup.add(shoulder);
-    shoulder.add(jointMesh(0.2, jointColor, true));
+    shoulder.add(jointMesh(0.20, jointColor, true));
     const upperArm = link(LEN.l1);
     shoulder.add(upperArm);
 
-    // elbow — J3
+    // ---- Elbow / J3 (pitch ขึ้น-ลง รอบแกน Z) ----
     const elbow = new THREE.Group();
     elbow.position.y = LEN.l1;
     shoulder.add(elbow);
@@ -334,57 +341,51 @@ function useArmScene(containerRef, joints, wireframe) {
     const foreArm = link(LEN.l2, 0.095, 0.08);
     elbow.add(foreArm);
 
-    // wrist roll — J4
-    const wristRoll = new THREE.Group();
-    wristRoll.position.y = LEN.l2;
-    elbow.add(wristRoll);
-    wristRoll.add(jointMesh(0.13, jointColor, true));
-    const wristLink1 = link(LEN.l3, 0.075, 0.065);
-    wristRoll.add(wristLink1);
+    // ---- Wrist / J4 (pitch ขึ้น-ลง รอบแกน Z) ----
+    const wrist = new THREE.Group();
+    wrist.position.y = LEN.l2;
+    elbow.add(wrist);
+    wrist.add(jointMesh(0.13, jointColor, true));
+    const wristLink = link(LEN.l3, 0.075, 0.065);
+    wrist.add(wristLink);
 
-    // wrist pitch — J5
-    const wristPitch = new THREE.Group();
-    wristPitch.position.y = LEN.l3;
-    wristRoll.add(wristPitch);
-    wristPitch.add(jointMesh(0.105, jointColor, false));
-    const wristLink2 = link(LEN.l4, 0.06, 0.05);
-    wristPitch.add(wristLink2);
+    // ---- Gripper / J5 (symmetric เปิด-ปิด %) ----
+    const gripperGroup = new THREE.Group();
+    gripperGroup.position.y = LEN.l3;
+    wrist.add(gripperGroup);
+    gripperGroup.add(jointMesh(0.085, jointColor, true));
 
-    // gripper — J6
-    const gripper = new THREE.Group();
-    gripper.position.y = LEN.l4;
-    wristPitch.add(gripper);
-    gripper.add(jointMesh(0.085, jointColor, true));
     const gripperBody = new THREE.Mesh(
       new THREE.CylinderGeometry(0.05, 0.065, LEN.grip, 16),
       new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
     );
     gripperBody.position.y = LEN.grip / 2;
-    gripperBody.castShadow = true;
-    gripperBody.receiveShadow = true;
-    gripper.add(gripperBody);
+    gripperBody.castShadow = true; gripperBody.receiveShadow = true;
+    gripperGroup.add(gripperBody);
 
-    // paddle-shaped fingers with dark rubberized tips, angled slightly inward
+    // Symmetric fingers — pivot at base of finger, open/close along X
     const fingerMat = new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.35 });
     const tipMat = new THREE.MeshStandardMaterial({ color: 0x05070f, metalness: 0.2, roughness: 0.7 });
+
     function makeFinger(sign) {
-      const f = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.12, 0.055), fingerMat);
-      body.position.y = 0.06;
+      const pivot = new THREE.Group();
+      pivot.position.set(sign * 0.055, LEN.grip, 0);
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.11, 0.052), fingerMat);
+      body.position.y = 0.055;
       body.castShadow = true;
-      const tip = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.035, 0.06), tipMat);
-      tip.position.y = 0.125;
+      const tip = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.032, 0.056), tipMat);
+      tip.position.y = 0.115;
       tip.castShadow = true;
-      f.add(body, tip);
-      f.position.set(sign * 0.062, LEN.grip, 0);
-      f.rotation.z = sign * -0.09;
-      return f;
+      pivot.add(body, tip);
+      return pivot;
     }
-    gripper.add(makeFinger(-1), makeFinger(1));
+    const fingerL = makeFinger(-1);
+    const fingerR = makeFinger(1);
+    gripperGroup.add(fingerL, fingerR);
 
     const endEffector = new THREE.Object3D();
-    endEffector.position.y = LEN.grip + 0.16;
-    gripper.add(endEffector);
+    endEffector.position.y = LEN.grip + 0.15;
+    gripperGroup.add(endEffector);
 
     // simple orbit controller state (no OrbitControls in this three build)
     const controls = {
@@ -472,7 +473,8 @@ function useArmScene(containerRef, joints, wireframe) {
 
     sceneRef.current = {
       scene, camera, renderer, controls,
-      baseGroup, shoulder, elbow, wristRoll, wristPitch, gripper, endEffector,
+      baseGroup, shoulder, elbow, wrist, gripperGroup,
+      fingerL, fingerR, endEffector,
       allMeshes,
     };
 
@@ -496,12 +498,20 @@ function useArmScene(containerRef, joints, wireframe) {
     const s = sceneRef.current;
     if (!s) return;
     const d = THREE.MathUtils.degToRad;
+
+    // J1 — ฐาน หมุนรอบแกน Y (yaw)
     s.baseGroup.rotation.y = d(joints.j1);
-    s.shoulder.rotation.z = d(joints.j2);
-    s.elbow.rotation.z = d(joints.j3);
-    s.wristRoll.rotation.y = d(joints.j4);
-    s.wristPitch.rotation.z = d(joints.j5);
-    s.gripper.rotation.y = d(joints.j6);
+    // J2 — ไหล่ pitch รอบแกน Z
+    s.shoulder.rotation.z = d(-joints.j2);
+    // J3 — ข้อศอก pitch รอบแกน Z
+    s.elbow.rotation.z = d(-joints.j3);
+    // J4 — ข้อมือ pitch รอบแกน Z
+    s.wrist.rotation.z = d(-joints.j4);
+    // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
+    const fingerSpread = (joints.j5 / 100) * 0.13;
+    s.fingerL.position.x = -(0.055 + fingerSpread);
+    s.fingerR.position.x = +(0.055 + fingerSpread);
+
     s.baseGroup.updateMatrixWorld(true);
 
     const scale = 300; // model units -> mm, tuned to roughly match a ~700mm reach
@@ -552,9 +562,10 @@ function useArmScene(containerRef, joints, wireframe) {
 // ---------------------------------------------------------------------------
 // Joint slider block
 // ---------------------------------------------------------------------------
-function JointControl({ label, sub, value, onChange, disabled }) {
-  const step = 1;
-  const clamp = (v) => Math.max(-180, Math.min(180, v));
+function JointControl({ label, sub, value, onChange, disabled, min = -180, max = 180, unit = "deg" }) {
+  const isGripper = unit === "%";
+  const step = isGripper ? 1 : 1;
+  const clamp = (v) => Math.max(min, Math.min(max, v));
   return (
     <div
       className="rounded-xl px-3.5 py-3.5"
@@ -570,24 +581,24 @@ function JointControl({ label, sub, value, onChange, disabled }) {
         style={{ background: C.panel, border: `1px solid ${C.borderSoft}` }}
       >
         <span className="font-mono text-base tabular-nums" style={{ color: C.text }}>
-          {value.toFixed(1)}
+          {isGripper ? value.toFixed(0) : value.toFixed(1)}
         </span>
-        <span className="text-xs" style={{ color: C.subDim }}>deg</span>
+        <span className="text-xs" style={{ color: C.subDim }}>{unit}</span>
       </div>
       <input
         type="range"
-        min={-180}
-        max={180}
-        step={0.5}
+        min={min}
+        max={max}
+        step={step}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         className="w-full accent-blue-500"
-        style={{ accentColor: C.accent }}
+        style={{ accentColor: isGripper ? C.green : C.accent }}
       />
       <div className="flex items-center justify-between text-[10px] mt-1" style={{ color: C.subDim }}>
-        <span>-180°</span>
-        <span>180°</span>
+        <span>{isGripper ? "ปิด 0%" : `${min}°`}</span>
+        <span>{isGripper ? "เปิด 100%" : `${max}°`}</span>
       </div>
       <div className="flex items-center gap-2 mt-3">
         <button
@@ -602,7 +613,7 @@ function JointControl({ label, sub, value, onChange, disabled }) {
           className="flex-1 h-7 rounded-md flex items-center justify-center text-[11px]"
           style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.subDim }}
         >
-          1°
+          {isGripper ? "1%" : "1°"}
         </div>
         <button
           disabled={disabled}
@@ -1128,6 +1139,9 @@ export default function RoboticArmControl() {
                           key={j.key}
                           label={j.label}
                           sub={j.sub}
+                          min={j.min}
+                          max={j.max}
+                          unit={j.unit}
                           value={joints[j.key]}
                           disabled={estopped}
                           onChange={(v) => setJoint(j.key, v)}
@@ -1334,7 +1348,7 @@ export default function RoboticArmControl() {
                               <div className="flex-1 min-w-0">
                                 <div className="text-sm font-medium truncate" style={{ color: C.text }}>{wp.name}</div>
                                 <div className="text-[11px] font-mono truncate" style={{ color: C.subDim }}>
-                                  J1 {wp.joints.j1.toFixed(0)}° · J2 {wp.joints.j2.toFixed(0)}° · J3 {wp.joints.j3.toFixed(0)}° · J4 {wp.joints.j4.toFixed(0)}° · J5 {wp.joints.j5.toFixed(0)}° · J6 {wp.joints.j6.toFixed(0)}°
+                                  J1 {wp.joints.j1.toFixed(0)}° · J2 {wp.joints.j2.toFixed(0)}° · J3 {wp.joints.j3.toFixed(0)}° · J4 {wp.joints.j4.toFixed(0)}° · J5 {wp.joints.j5.toFixed(0)}%
                                 </div>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
@@ -1381,7 +1395,7 @@ export default function RoboticArmControl() {
                   <PanelHeader title="มุมข้อต่อปัจจุบัน" />
                   <div className="px-5 pb-5 flex flex-col gap-1">
                     {JOINTS.map((j) => (
-                      <StatusRow key={j.key} label={`${j.label} (${j.sub})`} value={`${joints[j.key].toFixed(1)}°`} />
+                      <StatusRow key={j.key} label={`${j.label} (${j.sub})`} value={`${joints[j.key].toFixed(j.unit === "%" ? 0 : 1)}${j.unit === "%" ? "%" : "°"}`} />
                     ))}
                   </div>
                 </Panel>
