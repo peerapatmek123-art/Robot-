@@ -956,7 +956,7 @@ export default function RoboticArmControl() {
             <Bot size={18} color={C.accent} />
           </div>
           <span className="text-[15px] font-semibold" style={{ color: C.text }}>
-            6-DOF Robotic Arm Control
+            5-DOF Robotic Arm Control
           </span>
         </div>
 
@@ -1191,9 +1191,11 @@ export default function RoboticArmControl() {
                   <div className="px-5 pb-5">
                     <div className="flex items-center justify-between py-2.5" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
                       <span className="text-xs" style={{ color: C.sub }}>สถานะ</span>
-                      <span className="flex items-center gap-1.5 text-sm font-medium" style={{ color: estopped ? C.red : C.green }}>
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: estopped ? C.red : C.green }} />
-                        {estopped ? "หยุดฉุกเฉิน" : "เชื่อมต่อแล้ว"}
+                      <span className="flex items-center gap-1.5 text-sm font-medium"
+                        style={{ color: !connected ? C.red : estopped ? C.red : C.green }}>
+                        <span className="w-1.5 h-1.5 rounded-full"
+                          style={{ background: !connected ? C.red : estopped ? C.red : C.green }} />
+                        {connecting ? "กำลังเชื่อมต่อ..." : !connected ? "ไม่ได้เชื่อมต่อ" : estopped ? "หยุดฉุกเฉิน" : "เชื่อมต่อแล้ว"}
                       </span>
                     </div>
                     <StatusRow label="พอร์ต" value={selectedPort} />
@@ -1442,22 +1444,22 @@ export default function RoboticArmControl() {
                   <div>
                     <div className="text-[11px] uppercase tracking-wide mb-1" style={{ color: C.subDim }}>ชื่อโครงการ</div>
                     <div className="text-lg font-semibold" style={{ color: C.text }}>แขนกลต้นทุนต่ำ</div>
-                    <div className="text-sm" style={{ color: C.sub }}>Low-Cost RobotArm</div>
+                    <div className="text-sm" style={{ color: C.sub }}>Low-Cost Robot Arm (5-DOF)</div>
                   </div>
                   <div>
                     <div className="text-[11px] uppercase tracking-wide mb-1.5" style={{ color: C.subDim }}>คำอธิบาย</div>
                     <p className="text-sm leading-relaxed" style={{ color: C.sub }}>
-                      โปรแกรมควบคุมแขนกล 6 แกนต้นทุนต่ำ รองรับการควบคุมแบบเรียลไทม์ผ่าน WebSocket
-                      คำนวณตำแหน่งปลายแขนด้วย Forward Kinematics และขับเคลื่อนด้วย DC Motor
-                      ร่วมกับระบบเฟือง Cycloidal Drive เพื่อให้ผู้เรียนทุกระดับเข้าถึงเทคโนโลยีหุ่นยนต์ได้จริง
+                      โปรแกรมควบคุมแขนกล 5 แกนต้นทุนต่ำ รองรับการควบคุมแบบเรียลไทม์ผ่าน Serial (USB)
+                      คำนวณตำแหน่งปลายแขนด้วย Forward Kinematics ขับเคลื่อนด้วยมอเตอร์ N20 AB Encoder
+                      พร้อมระบบบันทึกและเล่นซ้ำท่าทาง (Record &amp; Playback) และปลายจับแบบ Symmetric Gripper
                     </p>
                   </div>
                   <div className="grid grid-cols-2 gap-3 pt-1">
                     {[
-                      ["จำนวนแกน", "6 แกน (2 หมุน + 4 ขยับ)"],
-                      ["การสื่อสาร", "WebSocket แบบเรียลไทม์"],
-                      ["การคำนวณตำแหน่ง", "Forward Kinematics"],
-                      ["ระบบขับเคลื่อน", "DC Motor + Cycloidal Drive"],
+                      ["จำนวนแกน", "5 แกน (J1 หมุน + J2-J4 ขึ้น-ลง + J5 Gripper)"],
+                      ["การสื่อสาร", "Serial USB (115200 bps)"],
+                      ["การคำนวณตำแหน่ง", "Forward Kinematics (DH Parameters)"],
+                      ["ระบบขับเคลื่อน", "N20 AB Encoder Motor"],
                     ].map(([k, v]) => (
                       <div key={k} className="rounded-xl px-4 py-3" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
                         <div className="text-[11px] mb-1" style={{ color: C.subDim }}>{k}</div>
