@@ -1,7 +1,7 @@
 {
   "name": "robot-arm-control",
   "version": "1.0.0",
-  "description": "6-DOF Robotic Arm Control - โปรแกรมควบคุมแขนกลต้นทุนต่ำ",
+  "description": "5-DOF Robotic Arm Control - โปรแกรมควบคุมแขนกล 5 แกนต้นทุนต่ำ",
   "author": "Low-Cost RobotArm Team",
   "private": true,
   "main": "electron/main.js",
@@ -38,7 +38,7 @@
   },
   "build": {
     "appId": "com.lowcostrobotarm.control",
-    "productName": "Robotic Arm Control",
+    "productName": "5-DOF Robotic Arm Control",
     "directories": { "output": "release" },
     "publish": null,
     "files": [
