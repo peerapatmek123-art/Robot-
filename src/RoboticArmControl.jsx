@@ -564,8 +564,10 @@ function useArmScene(containerRef, joints, wireframe) {
 // ---------------------------------------------------------------------------
 function JointControl({ label, sub, value, onChange, disabled, min = -180, max = 180, unit = "deg" }) {
   const isGripper = unit === "%";
-  const step = isGripper ? 1 : 1;
+  const [stepInput, setStepInput] = React.useState(isGripper ? "1" : "1");
   const clamp = (v) => Math.max(min, Math.min(max, v));
+  const stepVal = Math.max(0.1, parseFloat(stepInput) || 1);
+
   return (
     <div
       className="rounded-xl px-3.5 py-3.5"
@@ -589,7 +591,7 @@ function JointControl({ label, sub, value, onChange, disabled, min = -180, max =
         type="range"
         min={min}
         max={max}
-        step={step}
+        step={isGripper ? 1 : 0.5}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))}
@@ -603,21 +605,36 @@ function JointControl({ label, sub, value, onChange, disabled, min = -180, max =
       <div className="flex items-center gap-2 mt-3">
         <button
           disabled={disabled}
-          onClick={() => onChange(clamp(value - step))}
+          onClick={() => onChange(clamp(value - stepVal))}
           className="flex-1 h-7 rounded-md flex items-center justify-center transition-colors"
           style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.sub }}
         >
           <Minus size={13} />
         </button>
-        <div
-          className="flex-1 h-7 rounded-md flex items-center justify-center text-[11px]"
-          style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.subDim }}
-        >
-          {isGripper ? "1%" : "1°"}
-        </div>
+        <input
+          type="number"
+          value={stepInput}
+          min={0.1}
+          max={isGripper ? 100 : 180}
+          disabled={disabled}
+          onChange={(e) => setStepInput(e.target.value)}
+          onBlur={(e) => {
+            const v = parseFloat(e.target.value);
+            if (!isNaN(v) && v > 0) setStepInput(String(v));
+            else setStepInput(isGripper ? "1" : "1");
+          }}
+          className="flex-1 h-7 rounded-md text-center text-[11px] outline-none"
+          style={{
+            background: C.panel,
+            border: `1px solid ${C.accent}`,
+            color: C.text,
+            width: 0,
+          }}
+        />
+        <span className="text-[10px] shrink-0" style={{ color: C.subDim }}>{unit}</span>
         <button
           disabled={disabled}
-          onClick={() => onChange(clamp(value + step))}
+          onClick={() => onChange(clamp(value + stepVal))}
           className="flex-1 h-7 rounded-md flex items-center justify-center transition-colors"
           style={{ background: C.panel, border: `1px solid ${C.borderSoft}`, color: C.sub }}
         >
