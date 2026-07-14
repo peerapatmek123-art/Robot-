@@ -167,6 +167,11 @@ ipcMain.handle("serial:status", async () => {
 });
 
 ipcMain.handle("serial:send", async (event, data) => {
+  // โปรโตคอล JSON ที่ส่งไป ESP32 (5-DOF):
+  // {"type":"joints","j1":<deg>,"j2":<deg>,"j3":<deg>,"j4":<deg>,"j5":<0-100%>}\n
+  // j1 = ฐานหมุน (N20 AB Encoder, -180..180 deg)
+  // j2,j3,j4 = ขึ้น-ลง (deg)
+  // j5 = Gripper เปิด/ปิด symmetric (0=ปิดสนิท, 100=เปิดสุด, หน่วย %)
   const payload = JSON.stringify({ type: "joints", ...data }) + "\n";
 
   if (!SerialPort) {
