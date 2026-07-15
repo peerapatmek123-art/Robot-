@@ -394,25 +394,27 @@ function useArmScene(containerRef, joints, wireframe) {
     // ตอน runtime เพื่อให้ทำงานได้แม้ไม่มีอินเทอร์เน็ต (สำคัญมากสำหรับ Electron build)
     // ถ้าโหลดไม่ได้ (ไฟล์หาย/พังจริงๆ) จะใช้ procedural arm ที่สร้างไว้แล้วแทน
     const tryLoadGLTF = () => {
-    console.log("Start loading GLTF...");
+    console.log("Start Loading GLTF");
 
     const loader = new GLTFLoader();
 
         loader.load(
+    
             "./robot_arm.gltf",
     
             (gltf) => {
-                console.log("GLTF Loaded", gltf);
+                console.log("GLTF Loaded");
                 buildFromGLTF(gltf);
             },
     
             (xhr) => {
-                console.log(xhr.loaded, xhr.total);
+                console.log("Progress", xhr.loaded, xhr.total);
             },
     
             (err) => {
                 console.error("GLTF ERROR", err);
             }
+    
         );
     };
     function buildFromGLTF(gltf) {
