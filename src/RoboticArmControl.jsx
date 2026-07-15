@@ -395,21 +395,25 @@ function useArmScene(containerRef, joints, wireframe) {
     // ถ้าโหลดไม่ได้ (ไฟล์หาย/พังจริงๆ) จะใช้ procedural arm ที่สร้างไว้แล้วแทน
     const tryLoadGLTF = () => {
     const loader = new GLTFLoader();
-            loader.load(
+        loader.load(
             "/robot_arm.gltf",
     
             (gltf) => {
+    
                 buildFromGLTF(gltf);
+    
             },
     
             undefined,
     
             (err) => {
-                console.error("โหลด GLTF ไม่สำเร็จ:", err);
     
-                buildProceduralArm();
+                console.error(err);
+    
             }
+    
         );
+    
     };
 
     function buildFromGLTF(gltf) {
