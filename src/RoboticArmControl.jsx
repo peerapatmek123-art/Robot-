@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   Bot,
   Gamepad2,
@@ -390,20 +389,21 @@ function useArmScene(containerRef, joints, wireframe) {
     };
 
     // ---- โหลดโมเดล GLTF จาก public/robot_arm.gltf ----
-    // ใช้ GLTFLoader ที่ bundle มากับแอป (import ไว้ด้านบนของไฟล์) แทนการโหลดจาก CDN
-    // ตอน runtime เพื่อให้ทำงานได้แม้ไม่มีอินเทอร์เน็ต (สำคัญมากสำหรับ Electron build)
-    // ถ้าโหลดไม่ได้ (ไฟล์หาย/พังจริงๆ) จะใช้ procedural arm ที่สร้างไว้แล้วแทน
+    // three.js r128 ไม่ bundle GLTFLoader ใน core — โหลดจาก CDN แทน
+    // ถ้าโหลดไม่ได้ (offline/CDN ล่ม) จะใช้ procedural arm ที่สร้างไว้แล้ว
     const tryLoadGLTF = async () => {
       try {
+        const mod = await import("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/loaders/GLTFLoader.js");
+        const { GLTFLoader } = mod;
         const loader = new GLTFLoader();
         loader.load(
           "./robot_arm.gltf",
           (gltf) => buildFromGLTF(gltf),
           undefined,
-          (err) => console.error("GLTF load error, using procedural arm:", err)
+          (err) => console.info("GLTF load error, using procedural arm:", err)
         );
       } catch (e) {
-        console.error("GLTF not loaded, using procedural arm:", e.message);
+        console.info("GLTF not loaded, using procedural arm:", e.message);
       }
     };
 
