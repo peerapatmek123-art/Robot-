@@ -396,7 +396,7 @@ function useArmScene(containerRef, joints, wireframe) {
     const tryLoadGLTF = () => {
     const loader = new GLTFLoader();
         loader.load(
-            "/robot_arm.gltf",
+            "./robot_arm.gltf",
     
             (gltf) => {
     
