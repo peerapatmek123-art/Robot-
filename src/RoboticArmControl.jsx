@@ -397,7 +397,7 @@ function useArmScene(containerRef, joints, wireframe) {
       try {
         const loader = new GLTFLoader();
         loader.load(
-          "./robot_arm.gltf",
+          "/robot_arm.gltf",
           (gltf) => buildFromGLTF(gltf),
           undefined,
           (err) => console.error("GLTF load error, using procedural arm:", err)
