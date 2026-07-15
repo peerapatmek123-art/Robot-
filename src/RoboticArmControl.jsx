@@ -393,18 +393,23 @@ function useArmScene(containerRef, joints, wireframe) {
     // ใช้ GLTFLoader ที่ bundle มากับแอป (import ไว้ด้านบนของไฟล์) แทนการโหลดจาก CDN
     // ตอน runtime เพื่อให้ทำงานได้แม้ไม่มีอินเทอร์เน็ต (สำคัญมากสำหรับ Electron build)
     // ถ้าโหลดไม่ได้ (ไฟล์หาย/พังจริงๆ) จะใช้ procedural arm ที่สร้างไว้แล้วแทน
-    const tryLoadGLTF = async () => {
-      try {
-        const loader = new GLTFLoader();
-        loader.load(
-          "/robot_arm.gltf",
-          (gltf) => buildFromGLTF(gltf),
-          undefined,
-          (err) => console.error("GLTF load error, using procedural arm:", err)
+    const tryLoadGLTF = () => {
+    const loader = new GLTFLoader();
+            loader.load(
+            "/robot_arm.gltf",
+    
+            (gltf) => {
+                buildFromGLTF(gltf);
+            },
+    
+            undefined,
+    
+            (err) => {
+                console.error("โหลด GLTF ไม่สำเร็จ:", err);
+    
+                buildProceduralArm();
+            }
         );
-      } catch (e) {
-        console.error("GLTF not loaded, using procedural arm:", e.message);
-      }
     };
 
     function buildFromGLTF(gltf) {
