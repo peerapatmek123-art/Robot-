@@ -136,24 +136,28 @@ function StatusRow({ label, value, valueColor }) {
 // 3D arm scene — plain three.js (no OrbitControls in this r128 build), with a
 // small hand-rolled orbit/zoom/pan controller driven off pointer events.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 3D Arm Scene — โหลดโมเดล GLTF จริง แล้วสร้าง Joint hierarchy ด้วย pivot groups
+// ---------------------------------------------------------------------------
 function useArmScene(containerRef, joints, wireframe) {
   const sceneRef = useRef(null);
 
-  // init once
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
 
+    // ---- Renderer / Scene / Camera ----
     const scene = new THREE.Scene();
 
-    // ---- soft vertical gradient backdrop (deep navy -> panel color) ----------
+    // Gradient background (dark navy)
     const bgGeo = new THREE.SphereGeometry(28, 24, 16);
     const bgPos = bgGeo.attributes.position;
     const topCol = new THREE.Color(0x060810);
     const botCol = new THREE.Color(0x161d38);
     const bgColors = [];
     for (let i = 0; i < bgPos.count; i++) {
-      const y = bgPos.getY(i) / 28; // -1..1
+      const y = bgPos.getY(i) / 28;
       const t = THREE.MathUtils.clamp((y + 0.35) / 1.1, 0, 1);
       const c = topCol.clone().lerp(botCol, 1 - t);
       bgColors.push(c.r, c.g, c.b);
@@ -164,22 +168,19 @@ function useArmScene(containerRef, joints, wireframe) {
       new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false })
     );
     scene.add(bgMesh);
-    scene.background = new THREE.Color(C.panelAlt);
 
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    if (typeof THREE.sRGBEncoding !== "undefined") renderer.outputEncoding = THREE.sRGBEncoding;
     container.appendChild(renderer.domElement);
     renderer.domElement.style.display = "block";
     renderer.domElement.style.cursor = "grab";
 
-    // lights
+    // ---- Lighting ----
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const hemi = new THREE.HemisphereLight(0x8fa4ff, 0x0a0e1a, 0.35);
-    scene.add(hemi);
+    scene.add(new THREE.HemisphereLight(0x8fa4ff, 0x0a0e1a, 0.35));
     const key = new THREE.DirectionalLight(0xffffff, 1.05);
     key.position.set(3.2, 5.5, 3.6);
     key.castShadow = true;
@@ -200,7 +201,7 @@ function useArmScene(containerRef, joints, wireframe) {
     rim.position.set(-4, 3, -4);
     scene.add(rim);
 
-    // floor: soft shadow-catching disc + fine grid
+    // ---- Floor ----
     const floor = new THREE.Mesh(
       new THREE.CircleGeometry(4.4, 48),
       new THREE.ShadowMaterial({ opacity: 0.38 })
@@ -209,185 +210,13 @@ function useArmScene(containerRef, joints, wireframe) {
     floor.position.y = -0.001;
     floor.receiveShadow = true;
     scene.add(floor);
-
     const grid = new THREE.GridHelper(8, 32, 0x2c3766, 0x161c36);
-    grid.position.y = 0;
     grid.material.opacity = 0.55;
     grid.material.transparent = true;
     scene.add(grid);
-    const axes = new THREE.AxesHelper(0.55);
-    scene.add(axes);
+    scene.add(new THREE.AxesHelper(0.55));
 
-    // ---- build arm hierarchy -------------------------------------------------
-    const armColor = 0xeef1f8;
-    const jointColor = 0x14192e;
-    const accentColor = 0x3b6cf6;
-    const darkTrim = 0x232a4c;
-
-    function link(length, r0 = 0.11, r1 = 0.095, color = armColor) {
-      const g = new THREE.Group();
-      const geo = new THREE.CylinderGeometry(r1, r0, length, 24);
-      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.45, roughness: 0.32 });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.y = length / 2;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      g.add(mesh);
-      g.userData.mesh = mesh;
-
-      // twin trim rings (small dark bands) near each end of the link — echoes
-      // the segmented, "machined" look of the reference photo
-      const ringGeo = new THREE.TorusGeometry((r0 + r1) / 2 + 0.006, 0.014, 8, 20);
-      const ringMat = new THREE.MeshStandardMaterial({ color: darkTrim, metalness: 0.7, roughness: 0.3 });
-      const ringTop = new THREE.Mesh(ringGeo, ringMat);
-      ringTop.rotation.x = Math.PI / 2;
-      ringTop.position.y = length * 0.18;
-      ringTop.castShadow = true;
-      const ringBot = ringTop.clone();
-      ringBot.position.y = length * 0.82;
-      g.add(ringTop, ringBot);
-      return g;
-    }
-
-    // a joint "hub": dark sphere body + a thin accent equator ring + a ring of
-    // small bolt heads, similar to the collared joints in the reference photo
-    function jointMesh(radius = 0.155, color = jointColor, accent = false) {
-      const grp = new THREE.Group();
-      const geo = new THREE.SphereGeometry(radius, 24, 20);
-      const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.72, roughness: 0.22 });
-      const m = new THREE.Mesh(geo, mat);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      grp.add(m);
-
-      const eqGeo = new THREE.TorusGeometry(radius * 0.92, radius * 0.09, 10, 28);
-      const eqMat = new THREE.MeshStandardMaterial({
-        color: accent ? accentColor : 0x3a4270,
-        metalness: 0.5,
-        roughness: 0.35,
-        emissive: accent ? accentColor : 0x000000,
-        emissiveIntensity: accent ? 0.18 : 0,
-      });
-      const eq = new THREE.Mesh(eqGeo, eqMat);
-      eq.rotation.x = Math.PI / 2;
-      eq.castShadow = true;
-      grp.add(eq);
-
-      const boltCount = 6;
-      const boltGeo = new THREE.CylinderGeometry(radius * 0.1, radius * 0.1, radius * 0.12, 6);
-      const boltMat = new THREE.MeshStandardMaterial({ color: 0x080b16, metalness: 0.8, roughness: 0.35 });
-      for (let i = 0; i < boltCount; i++) {
-        const a = (i / boltCount) * Math.PI * 2;
-        const b = new THREE.Mesh(boltGeo, boltMat);
-        b.position.set(Math.cos(a) * radius * 0.78, Math.sin(a) * radius * 0.78, 0);
-        b.rotation.z = a;
-        b.rotation.x = Math.PI / 2;
-        b.castShadow = true;
-        eq.add(b);
-      }
-      grp.userData.mesh = m;
-      return grp;
-    }
-
-    // --------------- 5-DOF arm dimensions (in Three.js units, ~1 unit = 100mm) ---------------
-    const LEN = { base: 0.42, l1: 1.05, l2: 0.90, l3: 0.60, grip: 0.26 };
-    // J1 = base yaw, J2 = shoulder pitch, J3 = elbow pitch, J4 = wrist pitch, J5 = gripper %
-
-    const root = new THREE.Group();
-    scene.add(root);
-
-    // ---- Base / J1 (หมุน N20 AB Encoder รอบแกน Y) ----
-    const baseGroup = new THREE.Group();
-    root.add(baseGroup);
-
-    const footMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.56, 0.07, 32),
-      new THREE.MeshStandardMaterial({ color: 0x0e1326, metalness: 0.55, roughness: 0.4 })
-    );
-    footMesh.position.y = 0.035;
-    footMesh.castShadow = true;
-    footMesh.receiveShadow = true;
-    baseGroup.add(footMesh);
-
-    const baseMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.44, LEN.base, 32),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
-    );
-    baseMesh.position.y = LEN.base / 2 + 0.07;
-    baseMesh.castShadow = true; baseMesh.receiveShadow = true;
-    baseGroup.add(baseMesh);
-
-    const baseCollar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.41, 0.41, 0.05, 32),
-      new THREE.MeshStandardMaterial({ color: darkTrim, metalness: 0.7, roughness: 0.3 })
-    );
-    baseCollar.position.y = LEN.base + 0.07 - 0.025;
-    baseCollar.castShadow = true;
-    baseGroup.add(baseCollar);
-
-    // ---- Shoulder / J2 (pitch ขึ้น-ลง รอบแกน Z) ----
-    const shoulder = new THREE.Group();
-    shoulder.position.y = LEN.base + 0.07;
-    baseGroup.add(shoulder);
-    shoulder.add(jointMesh(0.20, jointColor, true));
-    const upperArm = link(LEN.l1);
-    shoulder.add(upperArm);
-
-    // ---- Elbow / J3 (pitch ขึ้น-ลง รอบแกน Z) ----
-    const elbow = new THREE.Group();
-    elbow.position.y = LEN.l1;
-    shoulder.add(elbow);
-    elbow.add(jointMesh(0.165, jointColor, false));
-    const foreArm = link(LEN.l2, 0.095, 0.08);
-    elbow.add(foreArm);
-
-    // ---- Wrist / J4 (pitch ขึ้น-ลง รอบแกน Z) ----
-    const wrist = new THREE.Group();
-    wrist.position.y = LEN.l2;
-    elbow.add(wrist);
-    wrist.add(jointMesh(0.13, jointColor, true));
-    const wristLink = link(LEN.l3, 0.075, 0.065);
-    wrist.add(wristLink);
-
-    // ---- Gripper / J5 (symmetric เปิด-ปิด %) ----
-    const gripperGroup = new THREE.Group();
-    gripperGroup.position.y = LEN.l3;
-    wrist.add(gripperGroup);
-    gripperGroup.add(jointMesh(0.085, jointColor, true));
-
-    const gripperBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05, 0.065, LEN.grip, 16),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 })
-    );
-    gripperBody.position.y = LEN.grip / 2;
-    gripperBody.castShadow = true; gripperBody.receiveShadow = true;
-    gripperGroup.add(gripperBody);
-
-    // Symmetric fingers — pivot at base of finger, open/close along X
-    const fingerMat = new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.35 });
-    const tipMat = new THREE.MeshStandardMaterial({ color: 0x05070f, metalness: 0.2, roughness: 0.7 });
-
-    function makeFinger(sign) {
-      const pivot = new THREE.Group();
-      pivot.position.set(sign * 0.055, LEN.grip, 0);
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.11, 0.052), fingerMat);
-      body.position.y = 0.055;
-      body.castShadow = true;
-      const tip = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.032, 0.056), tipMat);
-      tip.position.y = 0.115;
-      tip.castShadow = true;
-      pivot.add(body, tip);
-      return pivot;
-    }
-    const fingerL = makeFinger(-1);
-    const fingerR = makeFinger(1);
-    gripperGroup.add(fingerL, fingerR);
-
-    const endEffector = new THREE.Object3D();
-    endEffector.position.y = LEN.grip + 0.15;
-    gripperGroup.add(endEffector);
-
-    // simple orbit controller state (no OrbitControls in this three build)
+    // ---- Orbit controller ----
     const controls = {
       azimuth: Math.PI * 0.28,
       elevation: 0.5,
@@ -417,7 +246,6 @@ function useArmScene(containerRef, joints, wireframe) {
       renderer.setSize(w, h);
     }
     resize();
-
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
@@ -463,20 +291,246 @@ function useArmScene(containerRef, joints, wireframe) {
     }
     tick();
 
-    // collect every mesh under the arm root so wireframe toggling (and any
-    // future material tweaks) reliably reach the whole model, including the
-    // bolts/rings added inside jointMesh()
+    // ---- Build fallback procedural arm (ใช้ก่อนที่ GLTF โหลดเสร็จ) ----
+    const S = 18; // scale สำหรับโมเดล GLTF (โมเดลมีขนาด ~0.09m → ขยาย 18x ให้ได้ ~1.6m)
+    const armMat = new THREE.MeshStandardMaterial({ color: 0xeef1f8, metalness: 0.4, roughness: 0.35 });
+    const jointMat = new THREE.MeshStandardMaterial({ color: 0x14192e, metalness: 0.7, roughness: 0.22 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: 0x3b6cf6, metalness: 0.5, roughness: 0.3, emissive: 0x0b1a4a, emissiveIntensity: 0.3 });
+
+    // Joint pivot groups — เรียงจากฐานไปยอด
+    const baseGroup   = new THREE.Group();  // J1 หมุนรอบ Y
+    const shoulder    = new THREE.Group();  // J2 หมุนรอบ Z
+    const elbow       = new THREE.Group();  // J3 หมุนรอบ Z
+    const wrist       = new THREE.Group();  // J4 หมุนรอบ Z
+    const gripperGroup= new THREE.Group();  // J5 นิ้ว
+
+    // ---- link helper: แท่งกระบอก พร้อม shadow ----
+    function mkLink(len, r0 = 0.11, r1 = 0.095) {
+      const g = new THREE.Group();
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, len, 24), armMat);
+      m.position.y = len / 2;
+      m.castShadow = true; m.receiveShadow = true;
+      g.add(m); g.userData.mesh = m; return g;
+    }
+    function mkJoint(r = 0.155, mat = jointMat, accent = false) {
+      const g = new THREE.Group();
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 20), mat);
+      m.castShadow = true; g.add(m);
+      const eq = new THREE.Mesh(
+        new THREE.TorusGeometry(r * 0.92, r * 0.09, 10, 28),
+        accent ? accentMat : jointMat
+      );
+      eq.rotation.x = Math.PI / 2; g.add(eq);
+      return g;
+    }
+
+    const LEN = { base: 0.42, l1: 1.05, l2: 0.90, l3: 0.60, grip: 0.26 };
+
+    // foot + base column
+    const footM = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.56, 0.07, 32),
+      new THREE.MeshStandardMaterial({ color: 0x0e1326, metalness: 0.55, roughness: 0.4 }));
+    footM.position.y = 0.035; footM.castShadow = true; footM.receiveShadow = true;
+    baseGroup.add(footM);
+    const baseM = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.44, LEN.base, 32),
+      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 }));
+    baseM.position.y = LEN.base / 2 + 0.07; baseM.castShadow = true; baseM.receiveShadow = true;
+    baseGroup.add(baseM);
+
+    shoulder.position.y = LEN.base + 0.07;
+    baseGroup.add(shoulder);
+    shoulder.add(mkJoint(0.20, jointMat, true));
+    shoulder.add(mkLink(LEN.l1));
+
+    elbow.position.y = LEN.l1;
+    shoulder.add(elbow);
+    elbow.add(mkJoint(0.165, jointMat, false));
+    elbow.add(mkLink(LEN.l2, 0.095, 0.08));
+
+    wrist.position.y = LEN.l2;
+    elbow.add(wrist);
+    wrist.add(mkJoint(0.13, jointMat, true));
+    wrist.add(mkLink(LEN.l3, 0.075, 0.065));
+
+    gripperGroup.position.y = LEN.l3;
+    wrist.add(gripperGroup);
+    gripperGroup.add(mkJoint(0.085, jointMat, true));
+
+    const gripBody = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, LEN.grip, 16),
+      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 }));
+    gripBody.position.y = LEN.grip / 2; gripBody.castShadow = true; gripperGroup.add(gripBody);
+
+    function mkFinger(sign) {
+      const pivot = new THREE.Group();
+      pivot.position.set(sign * 0.055, LEN.grip, 0);
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.11, 0.052),
+        new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.35 }));
+      body.position.y = 0.055; body.castShadow = true;
+      pivot.add(body); return pivot;
+    }
+    const fingerL = mkFinger(-1);
+    const fingerR = mkFinger(1);
+    gripperGroup.add(fingerL, fingerR);
+
+    const endEffector = new THREE.Object3D();
+    endEffector.position.y = LEN.grip + 0.15;
+    gripperGroup.add(endEffector);
+
+    scene.add(baseGroup);
+
     const allMeshes = [];
-    root.traverse((obj) => {
-      if (obj.isMesh) allMeshes.push(obj);
-    });
+    baseGroup.traverse((o) => { if (o.isMesh) allMeshes.push(o); });
 
     sceneRef.current = {
       scene, camera, renderer, controls,
       baseGroup, shoulder, elbow, wrist, gripperGroup,
       fingerL, fingerR, endEffector,
       allMeshes,
+      gltfGroups: null, // จะเซ็ตหลัง GLTF โหลดเสร็จ
     };
+
+    // ---- โหลดโมเดล GLTF จาก public/robot_arm.gltf ----
+    // three.js r128 ไม่ bundle GLTFLoader ใน core — โหลดจาก CDN แทน
+    // ถ้าโหลดไม่ได้ (offline/CDN ล่ม) จะใช้ procedural arm ที่สร้างไว้แล้ว
+    const tryLoadGLTF = async () => {
+      try {
+        const mod = await import("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/loaders/GLTFLoader.js");
+        const { GLTFLoader } = mod;
+        const loader = new GLTFLoader();
+        loader.load(
+          "./robot_arm.gltf",
+          (gltf) => buildFromGLTF(gltf),
+          undefined,
+          (err) => console.info("GLTF load error, using procedural arm:", err)
+        );
+      } catch (e) {
+        console.info("GLTF not loaded, using procedural arm:", e.message);
+      }
+    };
+
+    function buildFromGLTF(gltf) {
+      const s = sceneRef.current;
+      if (!s) return;
+
+      // ลบ procedural arm ออกก่อน
+      scene.remove(baseGroup);
+
+      const model = gltf.scene;
+      const S = 18; // scale: โมเดล ~0.09m → ~1.6m
+
+      // ดึง mesh แต่ละชิ้นจาก GLTF ตามชื่อ
+      const meshes = {};
+      model.traverse((o) => {
+        if (o.isMesh) {
+          // ปรับ material ให้รับ light และ shadow
+          o.castShadow = true;
+          o.receiveShadow = true;
+          if (o.material) {
+            o.material = o.material.clone();
+            o.material.metalness = 0.35;
+            o.material.roughness = 0.42;
+          }
+          const n = o.name;
+          if (n.includes("Base") || n.includes("Gear")) meshes.base = meshes.base || [];
+          if (n.includes("Base") || n.includes("Gear")) (meshes.base).push(o);
+          if (n === "Arm" || n.includes("occurrence of Arm")) {
+            meshes.arms = meshes.arms || [];
+            meshes.arms.push(o);
+          }
+          if (n.includes("ArmGriper")) meshes.gripper = o;
+          if (n.includes("Left_Fringer") || n.includes("Left_Finger")) meshes.fingerL = o;
+          if (n.includes("Right_Finger")) meshes.fingerR = o;
+        }
+      });
+
+      // สร้าง pivot hierarchy ใหม่จากโมเดล GLTF
+      // เนื่องจาก GLTF นี้ไม่มี hierarchy ฝังไว้ ต้องสร้าง pivot เองแล้วเอา mesh มาใส่ใน offset ที่ถูก
+      const gBase = new THREE.Group();
+      const gShoulder = new THREE.Group();
+      const gElbow = new THREE.Group();
+      const gWrist = new THREE.Group();
+      const gGrip = new THREE.Group();
+
+      // ---- Base: mesh Base + Gear รวมกัน หมุนรอบ Y ----
+      if (meshes.base) {
+        meshes.base.forEach((m) => {
+          m.scale.setScalar(S);
+          gBase.add(m);
+        });
+      }
+      gBase.position.y = 0; // วางบนพื้น
+
+      // ---- Shoulder (J2): ใช้ Arm ชิ้นแรก ----
+      if (meshes.arms && meshes.arms[0]) {
+        const arm0 = meshes.arms[0];
+        arm0.scale.setScalar(S);
+        // offset ให้ origin อยู่ที่ข้อต่อ (ประมาณ y=0.42 ของฐาน)
+        arm0.position.set(0, -0.5 * S * 0.042, 0); // ปรับตาม bounding box จริง
+        gShoulder.add(arm0);
+      }
+      gShoulder.position.y = 0.49; // ความสูงไหล่จาก base
+      gBase.add(gShoulder);
+
+      // ---- Elbow (J3): Arm ชิ้นที่สอง ----
+      if (meshes.arms && meshes.arms[1]) {
+        const arm1 = meshes.arms[1];
+        arm1.scale.setScalar(S);
+        arm1.position.set(0, -0.62 * S * 0.042, 0);
+        gElbow.add(arm1);
+      }
+      gElbow.position.y = 1.05; // ความสูงข้อศอกจากไหล่
+      gShoulder.add(gElbow);
+
+      // ---- Wrist (J4): ArmGriper ----
+      if (meshes.gripper) {
+        const ag = meshes.gripper;
+        ag.scale.setScalar(S);
+        ag.position.set(0, -0.45 * S * 0.042, 0);
+        gWrist.add(ag);
+      }
+      gWrist.position.y = 0.90;
+      gElbow.add(gWrist);
+
+      // ---- Gripper (J5): นิ้ว ----
+      const gFingerL = new THREE.Group();
+      const gFingerR = new THREE.Group();
+      if (meshes.fingerL) {
+        meshes.fingerL.scale.setScalar(S);
+        gFingerL.add(meshes.fingerL);
+      }
+      if (meshes.fingerR) {
+        meshes.fingerR.scale.setScalar(S);
+        gFingerR.add(meshes.fingerR);
+      }
+      gFingerL.position.set(-0.055, 0, 0);
+      gFingerR.position.set(0.055, 0, 0);
+      gGrip.add(gFingerL, gFingerR);
+      gGrip.position.y = 0.60;
+      gWrist.add(gGrip);
+
+      // End effector สำหรับ FK
+      const ee = new THREE.Object3D();
+      ee.position.y = 0.41;
+      gGrip.add(ee);
+
+      scene.add(gBase);
+
+      // update sceneRef ให้ชี้ไปที่โมเดล GLTF
+      s.baseGroup   = gBase;
+      s.shoulder    = gShoulder;
+      s.elbow       = gElbow;
+      s.wrist       = gWrist;
+      s.gripperGroup= gGrip;
+      s.fingerL     = gFingerL;
+      s.fingerR     = gFingerR;
+      s.endEffector = ee;
+      s.gltfLoaded  = true;
+
+      const newMeshes = [];
+      gBase.traverse((o) => { if (o.isMesh) newMeshes.push(o); });
+      s.allMeshes = newMeshes;
+    }
+
+    tryLoadGLTF();
 
     return () => {
       cancelAnimationFrame(raf);
@@ -514,7 +568,7 @@ function useArmScene(containerRef, joints, wireframe) {
 
     s.baseGroup.updateMatrixWorld(true);
 
-    const scale = 300; // model units -> mm, tuned to roughly match a ~700mm reach
+    const scale = 300; // model units -> mm
     const pos = new THREE.Vector3();
     s.endEffector.getWorldPosition(pos);
     const quat = new THREE.Quaternion();
@@ -525,9 +579,9 @@ function useArmScene(containerRef, joints, wireframe) {
       x: pos.x * scale,
       y: pos.z * scale,
       z: pos.y * scale,
-      roll: THREE.MathUtils.radToDeg(euler.x),
+      roll:  THREE.MathUtils.radToDeg(euler.x),
       pitch: THREE.MathUtils.radToDeg(euler.z),
-      yaw: THREE.MathUtils.radToDeg(euler.y),
+      yaw:   THREE.MathUtils.radToDeg(euler.y),
     });
   }, [joints]);
 
@@ -558,6 +612,7 @@ function useArmScene(containerRef, joints, wireframe) {
 
   return { pose, resetView, zoom, setPanMode };
 }
+
 
 // ---------------------------------------------------------------------------
 // Joint slider block
