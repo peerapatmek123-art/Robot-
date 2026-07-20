@@ -139,10 +139,13 @@ function StatusRow({ label, value, valueColor }) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 3D Arm Scene — โหลดโมเดล GLTF จริง แล้วสร้าง Joint hierarchy ด้วย pivot groups
+// 3D Arm Scene — โหลดโมเดล GLTF จาก Blender เท่านั้น แล้วอ่าน Joint hierarchy
+// จากชื่อ object ที่ตั้งไว้ในไฟล์โมเดล (ไม่มี procedural fallback อีกต่อไป)
 // ---------------------------------------------------------------------------
 function useArmScene(containerRef, joints, wireframe) {
   const sceneRef = useRef(null);
+  const [modelReady, setModelReady] = useState(false);
+  const [modelError, setModelError] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -151,7 +154,8 @@ function useArmScene(containerRef, joints, wireframe) {
     // ---- Renderer / Scene / Camera ----
     const scene = new THREE.Scene();
 
-    // Gradient background (dark navy)
+    // Gradient background (dark navy) — ใช้ vertex colors บน mesh พื้นหลัง
+    // (ไม่เกี่ยวข้องกับตัวแขนกล เป็นแค่ฉากหลังของวิวพอร์ต)
     const bgGeo = new THREE.SphereGeometry(28, 24, 16);
     const bgPos = bgGeo.attributes.position;
     const topCol = new THREE.Color(0x060810);
@@ -292,255 +296,78 @@ function useArmScene(containerRef, joints, wireframe) {
     }
     tick();
 
-    // ---- Build fallback procedural arm (ใช้ก่อนที่ GLTF โหลดเสร็จ) ----
-    const S = 18; // scale สำหรับโมเดล GLTF (โมเดลมีขนาด ~0.09m → ขยาย 18x ให้ได้ ~1.6m)
-    const armMat = new THREE.MeshStandardMaterial({ color: 0xeef1f8, metalness: 0.4, roughness: 0.35 });
-    const jointMat = new THREE.MeshStandardMaterial({ color: 0x14192e, metalness: 0.7, roughness: 0.22 });
-    const accentMat = new THREE.MeshStandardMaterial({ color: 0x3b6cf6, metalness: 0.5, roughness: 0.3, emissive: 0x0b1a4a, emissiveIntensity: 0.3 });
-
-    // Joint pivot groups — เรียงจากฐานไปยอด
-    const baseGroup   = new THREE.Group();  // J1 หมุนรอบ Y
-    const shoulder    = new THREE.Group();  // J2 หมุนรอบ Z
-    const elbow       = new THREE.Group();  // J3 หมุนรอบ Z
-    const wrist       = new THREE.Group();  // J4 หมุนรอบ Z
-    const gripperGroup= new THREE.Group();  // J5 นิ้ว
-
-    // ---- link helper: แท่งกระบอก พร้อม shadow ----
-    function mkLink(len, r0 = 0.11, r1 = 0.095) {
-      const g = new THREE.Group();
-      const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, len, 24), armMat);
-      m.position.y = len / 2;
-      m.castShadow = true; m.receiveShadow = true;
-      g.add(m); g.userData.mesh = m; return g;
-    }
-    function mkJoint(r = 0.155, mat = jointMat, accent = false) {
-      const g = new THREE.Group();
-      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 20), mat);
-      m.castShadow = true; g.add(m);
-      const eq = new THREE.Mesh(
-        new THREE.TorusGeometry(r * 0.92, r * 0.09, 10, 28),
-        accent ? accentMat : jointMat
-      );
-      eq.rotation.x = Math.PI / 2; g.add(eq);
-      return g;
-    }
-
-    const LEN = { base: 0.42, l1: 1.05, l2: 0.90, l3: 0.60, grip: 0.26 };
-
-    // foot + base column
-    const footM = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.56, 0.07, 32),
-      new THREE.MeshStandardMaterial({ color: 0x0e1326, metalness: 0.55, roughness: 0.4 }));
-    footM.position.y = 0.035; footM.castShadow = true; footM.receiveShadow = true;
-    baseGroup.add(footM);
-    const baseM = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.44, LEN.base, 32),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 }));
-    baseM.position.y = LEN.base / 2 + 0.07; baseM.castShadow = true; baseM.receiveShadow = true;
-    baseGroup.add(baseM);
-
-    shoulder.position.y = LEN.base + 0.07;
-    baseGroup.add(shoulder);
-    shoulder.add(mkJoint(0.20, jointMat, true));
-    shoulder.add(mkLink(LEN.l1));
-
-    elbow.position.y = LEN.l1;
-    shoulder.add(elbow);
-    elbow.add(mkJoint(0.165, jointMat, false));
-    elbow.add(mkLink(LEN.l2, 0.095, 0.08));
-
-    wrist.position.y = LEN.l2;
-    elbow.add(wrist);
-    wrist.add(mkJoint(0.13, jointMat, true));
-    wrist.add(mkLink(LEN.l3, 0.075, 0.065));
-
-    gripperGroup.position.y = LEN.l3;
-    wrist.add(gripperGroup);
-    gripperGroup.add(mkJoint(0.085, jointMat, true));
-
-    const gripBody = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, LEN.grip, 16),
-      new THREE.MeshStandardMaterial({ color: 0xf4f6fb, metalness: 0.4, roughness: 0.35 }));
-    gripBody.position.y = LEN.grip / 2; gripBody.castShadow = true; gripperGroup.add(gripBody);
-
-    function mkFinger(sign) {
-      const pivot = new THREE.Group();
-      pivot.position.set(sign * 0.055, LEN.grip, 0);
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.11, 0.052),
-        new THREE.MeshStandardMaterial({ color: 0x1c2340, metalness: 0.5, roughness: 0.35 }));
-      body.position.y = 0.055; body.castShadow = true;
-      pivot.add(body); return pivot;
-    }
-    const fingerL = mkFinger(-1);
-    const fingerR = mkFinger(1);
-    gripperGroup.add(fingerL, fingerR);
-
-    const endEffector = new THREE.Object3D();
-    endEffector.position.y = LEN.grip + 0.15;
-    gripperGroup.add(endEffector);
-
-    scene.add(baseGroup);
-
-    const allMeshes = [];
-    baseGroup.traverse((o) => { if (o.isMesh) allMeshes.push(o); });
-
+    // ---- ไม่มี procedural arm อีกต่อไป — รอโหลดโมเดลจาก Blender (GLTF) เท่านั้น ----
     sceneRef.current = {
       scene, camera, renderer, controls,
-      baseGroup, shoulder, elbow, wrist, gripperGroup,
-      fingerL, fingerR, endEffector,
-      allMeshes,
-      gltfGroups: null, // จะเซ็ตหลัง GLTF โหลดเสร็จ
+      baseGroup: null,
+      shoulder: null,
+      elbow: null,
+      wrist: null,
+      gripperGroup: null,
+      fingerL: null,
+      fingerR: null,
+      endEffector: null,
+      allMeshes: [],
+      ready: false,
     };
 
-    // ---- โหลดโมเดล GLTF จาก public/robot_arm.gltf ----
+    // ---- โหลดโมเดล GLTF จาก public/robotarm.glb ----
     // ใช้ GLTFLoader ที่ bundle มากับแอป (import ไว้ด้านบนของไฟล์) แทนการโหลดจาก CDN
     // ตอน runtime เพื่อให้ทำงานได้แม้ไม่มีอินเทอร์เน็ต (สำคัญมากสำหรับ Electron build)
-    // ถ้าโหลดไม่ได้ (ไฟล์หาย/พังจริงๆ) จะใช้ procedural arm ที่สร้างไว้แล้วแทน
-    const tryLoadGLTF = () => {
-    console.log("Start Loading GLTF");
-
+    // โมเดลนี้เป็นแหล่งเดียวของรูปทรงแขนกล — ไม่มีการสร้างชิ้นส่วนขึ้นเองด้วยโค้ดอีกแล้ว
     const loader = new GLTFLoader();
 
-        loader.load(
-    
-            "./robot_arm.gltf",
-    
-            (gltf) => {
-                console.log("GLTF Loaded");
-                buildFromGLTF(gltf);
-            },
-    
-            (xhr) => {
-                console.log("Progress", xhr.loaded, xhr.total);
-            },
-    
-            (err) => {
-                console.error("GLTF ERROR", err);
-            }
-    
-        );
-    };
+    loader.load(
+      "/robotarm.glb",
+      (gltf) => {
+        console.log("GLTF Loaded");
+        buildFromGLTF(gltf);
+      },
+      (xhr) => {
+        console.log("Progress", xhr.loaded, xhr.total);
+      },
+      (err) => {
+        console.error("GLTF ERROR", err);
+        setModelError(true);
+      }
+    );
+
     function buildFromGLTF(gltf) {
       const s = sceneRef.current;
       if (!s) return;
 
-      // ลบ procedural arm ออกก่อน
-      scene.remove(baseGroup);
-
       const model = gltf.scene;
-      const S = 18; // scale: โมเดล ~0.09m → ~1.6m
+      scene.add(model);
 
-      // ดึง mesh แต่ละชิ้นจาก GLTF ตามชื่อ
-      const meshes = {};
+      s.baseGroup = model.getObjectByName("Base");
+      s.shoulder = model.getObjectByName("ArmJ2");
+      s.elbow = model.getObjectByName("ArmJ3");
+      s.wrist = model.getObjectByName("ArmGripper");
+      s.gripperGroup = model.getObjectByName("FingerBase");
+      s.fingerL = model.getObjectByName("Left_Finger");
+      s.fingerR = model.getObjectByName("Right_Finger");
+      s.endEffector = s.gripperGroup;
+
+      const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
+        .filter((k) => !s[k]);
+      if (missing.length) {
+        console.error("GLTF model is missing expected named objects:", missing);
+        setModelError(true);
+        return;
+      }
+
+      s.allMeshes = [];
       model.traverse((o) => {
         if (o.isMesh) {
-          // ปรับ material ให้รับ light และ shadow
           o.castShadow = true;
           o.receiveShadow = true;
-          if (o.material) {
-            o.material = o.material.clone();
-            o.material.metalness = 0.35;
-            o.material.roughness = 0.42;
-          }
-          const n = o.name;
-          if (n.includes("Base") || n.includes("Gear")) meshes.base = meshes.base || [];
-          if (n.includes("Base") || n.includes("Gear")) (meshes.base).push(o);
-          if (n === "Arm" || n.includes("occurrence of Arm")) {
-            meshes.arms = meshes.arms || [];
-            meshes.arms.push(o);
-          }
-          if (n.includes("ArmGriper")) meshes.gripper = o;
-          if (n.includes("Left_Fringer") || n.includes("Left_Finger")) meshes.fingerL = o;
-          if (n.includes("Right_Finger")) meshes.fingerR = o;
+          s.allMeshes.push(o);
         }
       });
 
-      // สร้าง pivot hierarchy ใหม่จากโมเดล GLTF
-      // เนื่องจาก GLTF นี้ไม่มี hierarchy ฝังไว้ ต้องสร้าง pivot เองแล้วเอา mesh มาใส่ใน offset ที่ถูก
-      const gBase = new THREE.Group();
-      const gShoulder = new THREE.Group();
-      const gElbow = new THREE.Group();
-      const gWrist = new THREE.Group();
-      const gGrip = new THREE.Group();
-
-      // ---- Base: mesh Base + Gear รวมกัน หมุนรอบ Y ----
-      if (meshes.base) {
-        meshes.base.forEach((m) => {
-          m.scale.setScalar(S);
-          gBase.add(m);
-        });
-      }
-      gBase.position.y = 0; // วางบนพื้น
-
-      // ---- Shoulder (J2): ใช้ Arm ชิ้นแรก ----
-      if (meshes.arms && meshes.arms[0]) {
-        const arm0 = meshes.arms[0];
-        arm0.scale.setScalar(S);
-        // offset ให้ origin อยู่ที่ข้อต่อ (ประมาณ y=0.42 ของฐาน)
-        arm0.position.set(0, -0.5 * S * 0.042, 0); // ปรับตาม bounding box จริง
-        gShoulder.add(arm0);
-      }
-      gShoulder.position.y = 0.49; // ความสูงไหล่จาก base
-      gBase.add(gShoulder);
-
-      // ---- Elbow (J3): Arm ชิ้นที่สอง ----
-      if (meshes.arms && meshes.arms[1]) {
-        const arm1 = meshes.arms[1];
-        arm1.scale.setScalar(S);
-        arm1.position.set(0, -0.62 * S * 0.042, 0);
-        gElbow.add(arm1);
-      }
-      gElbow.position.y = 1.05; // ความสูงข้อศอกจากไหล่
-      gShoulder.add(gElbow);
-
-      // ---- Wrist (J4): ArmGriper ----
-      if (meshes.gripper) {
-        const ag = meshes.gripper;
-        ag.scale.setScalar(S);
-        ag.position.set(0, -0.45 * S * 0.042, 0);
-        gWrist.add(ag);
-      }
-      gWrist.position.y = 0.90;
-      gElbow.add(gWrist);
-
-      // ---- Gripper (J5): นิ้ว ----
-      const gFingerL = new THREE.Group();
-      const gFingerR = new THREE.Group();
-      if (meshes.fingerL) {
-        meshes.fingerL.scale.setScalar(S);
-        gFingerL.add(meshes.fingerL);
-      }
-      if (meshes.fingerR) {
-        meshes.fingerR.scale.setScalar(S);
-        gFingerR.add(meshes.fingerR);
-      }
-      gFingerL.position.set(-0.055, 0, 0);
-      gFingerR.position.set(0.055, 0, 0);
-      gGrip.add(gFingerL, gFingerR);
-      gGrip.position.y = 0.60;
-      gWrist.add(gGrip);
-
-      // End effector สำหรับ FK
-      const ee = new THREE.Object3D();
-      ee.position.y = 0.41;
-      gGrip.add(ee);
-
-      scene.add(gBase);
-
-      // update sceneRef ให้ชี้ไปที่โมเดล GLTF
-      s.baseGroup   = gBase;
-      s.shoulder    = gShoulder;
-      s.elbow       = gElbow;
-      s.wrist       = gWrist;
-      s.gripperGroup= gGrip;
-      s.fingerL     = gFingerL;
-      s.fingerR     = gFingerR;
-      s.endEffector = ee;
-      s.gltfLoaded  = true;
-
-      const newMeshes = [];
-      gBase.traverse((o) => { if (o.isMesh) newMeshes.push(o); });
-      s.allMeshes = newMeshes;
+      s.ready = true;
+      setModelReady(true);
     }
-
-    tryLoadGLTF();
 
     return () => {
       cancelAnimationFrame(raf);
@@ -560,7 +387,7 @@ function useArmScene(containerRef, joints, wireframe) {
 
   useEffect(() => {
     const s = sceneRef.current;
-    if (!s) return;
+    if (!s || !s.ready) return; // โมเดล GLTF ยังโหลดไม่เสร็จ — ยังไม่มีอะไรให้ขยับ
     const d = THREE.MathUtils.degToRad;
 
     // J1 — ฐาน หมุนรอบแกน Y (yaw)
@@ -593,13 +420,13 @@ function useArmScene(containerRef, joints, wireframe) {
       pitch: THREE.MathUtils.radToDeg(euler.z),
       yaw:   THREE.MathUtils.radToDeg(euler.y),
     });
-  }, [joints]);
+  }, [joints, modelReady]);
 
   useEffect(() => {
     const s = sceneRef.current;
-    if (!s) return;
+    if (!s || !s.ready) return;
     s.allMeshes.forEach((m) => { m.material.wireframe = wireframe; });
-  }, [wireframe]);
+  }, [wireframe, modelReady]);
 
   const resetView = useCallback(() => {
     const s = sceneRef.current;
@@ -620,7 +447,7 @@ function useArmScene(containerRef, joints, wireframe) {
     if (s) s.controls.panMode = v;
   }, []);
 
-  return { pose, resetView, zoom, setPanMode };
+  return { pose, resetView, zoom, setPanMode, modelReady, modelError };
 }
 
 
@@ -858,7 +685,7 @@ export default function RoboticArmControl() {
   const [telemetry, setTelemetry] = useState({ voltage: 12.0, temp: 36.2, fps: 60 });
 
   const containerRef = useRef(null);
-  const { pose, resetView, zoom, setPanMode } = useArmScene(containerRef, joints, wireframe);
+  const { pose, resetView, zoom, setPanMode, modelReady, modelError } = useArmScene(containerRef, joints, wireframe);
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -1206,7 +1033,21 @@ export default function RoboticArmControl() {
                       ))}
                     </div>
                   </div>
-                  <div className="flex-1 mx-3 mb-3 rounded-xl overflow-hidden" ref={containerRef} style={{ minHeight: 300 }} />
+                  <div className="flex-1 mx-3 mb-3 rounded-xl overflow-hidden relative" style={{ minHeight: 300 }}>
+                    <div ref={containerRef} className="absolute inset-0" />
+                    {!modelReady && !modelError && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <span className="text-xs" style={{ color: C.subDim }}>กำลังโหลดโมเดล 3D...</span>
+                      </div>
+                    )}
+                    {modelError && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-6 text-center">
+                        <span className="text-xs" style={{ color: C.red }}>
+                          โหลดโมเดล /robotarm.glb ไม่สำเร็จ — ตรวจสอบว่าไฟล์อยู่ใน public/ และมีชื่อ object ตรงกับที่กำหนด
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </Panel>
               </div>
 
@@ -1534,6 +1375,7 @@ export default function RoboticArmControl() {
                       โปรแกรมควบคุมแขนกล 5 แกนต้นทุนต่ำ รองรับการควบคุมแบบเรียลไทม์ผ่าน Serial (USB)
                       คำนวณตำแหน่งปลายแขนด้วย Forward Kinematics ขับเคลื่อนด้วยมอเตอร์ N20 AB Encoder
                       พร้อมระบบบันทึกและเล่นซ้ำท่าทาง (Record &amp; Playback) และปลายจับแบบ Symmetric Gripper
+                      รูปทรงแขนกลทั้งหมดแสดงผลจากโมเดล 3D ที่สร้างใน Blender (.glb) โดยตรง
                     </p>
                   </div>
                   <div className="grid grid-cols-2 gap-3 pt-1">
