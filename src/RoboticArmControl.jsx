@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import robotModel from "./assets/robotarm.glb";
 import {
   Bot,
   Gamepad2,
@@ -318,7 +319,7 @@ function useArmScene(containerRef, joints, wireframe) {
     const loader = new GLTFLoader();
 
     loader.load(
-      "/robotarm.glb",
+      robotModel,
       (gltf) => {
         console.log("GLTF Loaded");
         buildFromGLTF(gltf);
