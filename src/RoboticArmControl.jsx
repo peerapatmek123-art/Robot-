@@ -349,7 +349,7 @@ function useArmScene(containerRef, joints, wireframe) {
               obj.parent?.name
           );
       });
-      s.baseGroup = model.getObjectByName("Gear for Base");
+      s.baseGroup = model.getObjectByName("Gear_for_Base");
       
       s.shoulder = model.getObjectByName("ArmJ2");
       s.elbow = model.getObjectByName("ArmJ3");
