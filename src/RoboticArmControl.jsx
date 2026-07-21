@@ -339,17 +339,24 @@ function useArmScene(containerRef, joints, wireframe) {
 
       const model = gltf.scene;
       scene.add(model);
+      model.scale.set(20, 20, 20);
       console.log("===== MODEL OBJECTS =====");
       
-      model.traverse((obj) => {
-        console.log(obj.name, obj.type);
+      model.traverse((obj)=>{
+          console.log(
+              obj.name,
+              "parent =",
+              obj.parent?.name
+          );
       });
       s.baseGroup = model.getObjectByName("Base");
       s.shoulder = model.getObjectByName("ArmJ2");
       s.elbow = model.getObjectByName("ArmJ3");
-      s.wrist = model.getObjectByName("ArmGripper");
-      s.gripperGroup = model.getObjectByName("FingerBase");
-      s.fingerL = model.getObjectByName("Left_Finger");
+      
+      s.wrist = model.getObjectByName("ArmGriper");
+      s.gripperGroup = model.getObjectByName("lid");
+      
+      s.fingerL = model.getObjectByName("Left_Fringer");
       s.fingerR = model.getObjectByName("Right_Finger");
       s.endEffector = s.gripperGroup;
 
