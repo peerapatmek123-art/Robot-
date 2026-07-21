@@ -339,7 +339,7 @@ function useArmScene(containerRef, joints, wireframe) {
 
       const model = gltf.scene;
       scene.add(model);
-      model.scale.set(10, 10, 10);
+      model.scale.set(5, 5, 5);
       console.log("===== MODEL OBJECTS =====");
       
       model.traverse((obj)=>{
