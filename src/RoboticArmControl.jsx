@@ -359,9 +359,6 @@ function useArmScene(containerRef, joints, wireframe) {
       s.fingerR = model.getObjectByName("Right_Finger");
       s.endEffector = s.gripperGroup;
       // ใส่ AxesHelper หลังจากหา Object ครบแล้ว
-      s.shoulder.add(new THREE.AxesHelper(0.15));
-      s.elbow.add(new THREE.AxesHelper(0.15));
-      s.wrist.add(new THREE.AxesHelper(0.15));
 
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
         .filter((k) => !s[k]);
@@ -410,9 +407,9 @@ function useArmScene(containerRef, joints, wireframe) {
     // J2 — ไหล่ pitch รอบแกน Z
     s.shoulder.rotation.x = d(-joints.j2);
     // J3 — ข้อศอก pitch รอบแกน Z
-    s.elbow.rotation.z = d(-joints.j3);
+    s.elbow.rotation.x = d(-joints.j3);
     // J4 — ข้อมือ pitch รอบแกน Z
-    s.wrist.rotation.z = d(-joints.j4);
+    s.wrist.rotation.x = d(-joints.j4);
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
     const fingerSpread = (joints.j5 / 100) * 0.13;
     s.fingerL.position.x = -(0.055 + fingerSpread);
