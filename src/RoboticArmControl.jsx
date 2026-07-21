@@ -409,13 +409,13 @@ function useArmScene(containerRef, joints, wireframe) {
     // J2 — ไหล่ pitch รอบแกน Z
     s.shoulder.rotation.x = d(-joints.j2);
     // J3 — ข้อศอก pitch รอบแกน Z
-    s.elbow.rotation.z = d(-joints.j3);
+    s.elbow.rotation.y = d(-joints.j3);
     // J4 — ข้อมือ pitch รอบแกน Z
-    s.wrist.rotation.z = d(-joints.j4);
+    s.wrist.rotation.y = d(-joints.j4);
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
-    const fingerSpread = (joints.j5 / 100) * 0.13;
-    s.fingerL.position.x = -(0.055 + fingerSpread);
-    s.fingerR.position.x = +(0.055 + fingerSpread);
+    const fingerSpread = (joints.j5 / 100) * 0.03;
+    s.fingerL.position.y = -(0.015 + fingerSpread);
+    s.fingerR.position.y = +(0.015 + fingerSpread);
 
     s.baseGroup.updateMatrixWorld(true);
 
