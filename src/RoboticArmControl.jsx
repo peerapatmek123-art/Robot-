@@ -349,16 +349,18 @@ function useArmScene(containerRef, joints, wireframe) {
               obj.parent?.name
           );
       });
-      s.baseGroup = model.getObjectByName("Base");
+      s.baseGroup = model.getObjectByName("Gear for Base");
+      
       s.shoulder = model.getObjectByName("ArmJ2");
       s.elbow = model.getObjectByName("ArmJ3");
       s.wrist = model.getObjectByName("ArmGriper");
       
-      s.gripperGroup = model.getObjectByName("lid");
+      s.gripperGroup = model.getObjectByName("FingerBase");
+      
       s.fingerL = model.getObjectByName("Left_Fringer");
       s.fingerR = model.getObjectByName("Right_Finger");
+      
       s.endEffector = s.gripperGroup;
-      // ใส่ AxesHelper หลังจากหา Object ครบแล้ว
 
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
         .filter((k) => !s[k]);
