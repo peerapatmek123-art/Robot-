@@ -339,7 +339,11 @@ function useArmScene(containerRef, joints, wireframe) {
 
       const model = gltf.scene;
       scene.add(model);
-
+      console.log("===== MODEL OBJECTS =====");
+      
+      model.traverse((obj) => {
+        console.log(obj.name, obj.type);
+      });
       s.baseGroup = model.getObjectByName("Base");
       s.shoulder = model.getObjectByName("ArmJ2");
       s.elbow = model.getObjectByName("ArmJ3");
