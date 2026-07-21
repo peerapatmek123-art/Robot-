@@ -357,7 +357,7 @@ function useArmScene(containerRef, joints, wireframe) {
       s.gripperGroup = model.getObjectByName("lid");
       s.fingerL = model.getObjectByName("Left_Fringer");
       s.fingerR = model.getObjectByName("Right_Finger");
-      
+      s.endEffector = s.gripperGroup;
       // ใส่ AxesHelper หลังจากหา Object ครบแล้ว
       s.shoulder.add(new THREE.AxesHelper(0.15));
       s.elbow.add(new THREE.AxesHelper(0.15));
