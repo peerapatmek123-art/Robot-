@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import robotModel from "./assets/robotarm.glb";
+import robotModel from "./assets/arm_robotics.glb";
 import {
   Bot,
   Gamepad2,
