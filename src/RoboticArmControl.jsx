@@ -339,7 +339,7 @@ function useArmScene(containerRef, joints, wireframe) {
 
       const model = gltf.scene;
       scene.add(model);
-      model.scale.set(20, 20, 20);
+      model.scale.set(10, 10, 10);
       console.log("===== MODEL OBJECTS =====");
       
       model.traverse((obj)=>{
@@ -351,6 +351,9 @@ function useArmScene(containerRef, joints, wireframe) {
       });
       s.baseGroup = model.getObjectByName("Base");
       s.shoulder = model.getObjectByName("ArmJ2");
+      s.shoulder.add(new THREE.AxesHelper(0.15));
+      s.elbow.add(new THREE.AxesHelper(0.15));
+      s.wrist.add(new THREE.AxesHelper(0.15));
       s.elbow = model.getObjectByName("ArmJ3");
       
       s.wrist = model.getObjectByName("ArmGriper");
@@ -405,7 +408,7 @@ function useArmScene(containerRef, joints, wireframe) {
     // J1 — ฐาน หมุนรอบแกน Y (yaw)
     s.baseGroup.rotation.y = d(joints.j1);
     // J2 — ไหล่ pitch รอบแกน Z
-    s.shoulder.rotation.z = d(-joints.j2);
+    s.shoulder.rotation.x = d(-joints.j2);
     // J3 — ข้อศอก pitch รอบแกน Z
     s.elbow.rotation.z = d(-joints.j3);
     // J4 — ข้อมือ pitch รอบแกน Z
