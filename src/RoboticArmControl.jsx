@@ -425,12 +425,14 @@ function useArmScene(containerRef, joints, wireframe) {
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
     const spread = (joints.j5 / 100) * 0.03;
 
+// กลับสู่ตำแหน่งเริ่มต้น
     s.fingerL.position.copy(s.fingerLHome);
     s.fingerR.position.copy(s.fingerRHome);
     
-    s.fingerL.position.x -= spread;
-    s.fingerR.position.x += spread;
-
+    // เลื่อนตามแกน Local
+    s.fingerL.translateY(-spread);
+    s.fingerR.translateY(spread);
+    
     s.baseGroup.updateMatrixWorld(true);
 
     const scale = 300; // model units -> mm
