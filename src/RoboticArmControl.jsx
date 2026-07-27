@@ -812,62 +812,103 @@ export default function RoboticArmControl() {
   // plays a sequence of waypoints in order, interpolating smoothly between
   // each recorded pose; honors the global speed slider and the loop toggle
   const playSequence = useCallback(async (list, startIndex = 0) => {
+
     if (!list.length) {
-      showToast("ยังไม่มีท่าทางที่บันทึกไว้");
-      return;
+        showToast("ยังไม่มีท่าทาง");
+        return;
     }
+
     if (estopped) {
-      showToast("ยกเลิกหยุดฉุกเฉินก่อนเล่นท่าทาง");
-      return;
+        showToast("ยกเลิก Emergency Stop ก่อน");
+        return;
     }
+
     cancelPlaybackRef.current = false;
+
     setPlaying(true);
+
     setActiveTab("manual");
 
-    let current = { ...joints };
-    let keepGoing = true;
-    while (keepGoing && !cancelPlaybackRef.current) {
-      for (let i = startIndex; i < list.length; i++) {
+    for (let i = startIndex; i < list.length; i++) {
+
         if (cancelPlaybackRef.current) break;
-        setPlayIndex(i);
-        setPlayProgress(0);
+
         const target = list[i].joints;
-        const spd = Math.max(10, speedRef.current);
-        const duration = Math.max(350, 2400 * (100 / spd));
+
+        setPlayIndex(i);
+
+        setPlayProgress(0);
+
+        // ==========================
+        // ส่งไป ESP32
+        // ==========================
+
+        const res = await window.electronAPI.sendJointAngles(target);
+
+        if (!res?.ok) {
+
+            showToast("ส่งข้อมูลไป ESP32 ไม่สำเร็จ");
+
+            break;
+
+        }
+
+        // ==========================
+        // Animation บน Three.js
+        // ==========================
+
+        const current = { ...joints };
+
+        const duration = 600;
+
         const t0 = performance.now();
-        // eslint-disable-next-line no-await-in-loop
+
         await new Promise((resolve) => {
-          function step(now) {
-            if (cancelPlaybackRef.current) { resolve(); return; }
-            const elapsed = now - t0;
-            const p = Math.min(1, elapsed / duration);
-            const eased = easeInOut(p);
-            const next = {};
-            JOINTS.forEach((j) => {
-              next[j.key] = current[j.key] + (target[j.key] - current[j.key]) * eased;
-            });
-            setJoints(next);
-            setPlayProgress(p);
-            if (p < 1) requestAnimationFrame(step);
-            else resolve();
-          }
-          requestAnimationFrame(step);
+
+            function animate(now) {
+
+                const p = Math.min(1, (now - t0) / duration);
+
+                const next = {};
+
+                JOINTS.forEach(j => {
+
+                    next[j.key] =
+                        current[j.key] +
+                        (target[j.key] - current[j.key]) * p;
+
+                });
+
+                setJoints(next);
+
+                setPlayProgress(p);
+
+                if (p < 1)
+                    requestAnimationFrame(animate);
+                else
+                    resolve();
+
+            }
+
+            requestAnimationFrame(animate);
+
         });
-        current = target;
-        if (cancelPlaybackRef.current) break;
-        // brief settle pause at each waypoint
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      startIndex = 0;
-      keepGoing = loopRef.current && !cancelPlaybackRef.current;
+
+        // ==========================
+        // รอ ESP32 DONE
+        // ==========================
+
+        await window.electronAPI.waitUntilDone();
+
     }
 
     setPlaying(false);
-    setPlayIndex(-1);
-    setPlayProgress(0);
-  }, [joints, estopped]);
 
+    setPlayIndex(-1);
+
+    setPlayProgress(0);
+
+}, [joints, estopped]);
   const playAll = () => playSequence(waypoints, 0);
   const playFrom = (id) => {
     const idx = waypoints.findIndex((w) => w.id === id);
