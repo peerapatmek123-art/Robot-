@@ -423,7 +423,7 @@ function useArmScene(containerRef, joints, wireframe) {
     // J4 — ข้อมือ pitch รอบแกน Z
     s.wrist.rotation.y = d(-joints.j4);
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
-    const spread = (joints.j5 / 100) * 0.03;
+    const spread = (joints.j5 / 100) * 0.15;
 
 // กลับสู่ตำแหน่งเริ่มต้น
     s.fingerL.position.copy(s.fingerLHome);
