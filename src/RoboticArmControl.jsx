@@ -367,6 +367,9 @@ function useArmScene(containerRef, joints, wireframe) {
       s.fingerL = model.getObjectByName("Left_Fringer");
       s.fingerR = model.getObjectByName("Right_Finger");
       
+      s.fingerLHome = s.fingerL.position.clone();
+      s.fingerRHome = s.fingerR.position.clone();
+      
       s.endEffector = s.gripperGroup;
 
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
