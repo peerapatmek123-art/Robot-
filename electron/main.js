@@ -40,9 +40,13 @@ try {
 const BAUD_RATE = 115200;
 
 let mainWindow;
-let port = null; // instance ของ SerialPort เมื่อเชื่อมต่อจริง
+let port = null;
 let parser = null;
-let mockConnectedPortName = null; // ใช้เฉพาะตอนไม่มีไลบรารี serialport
+
+// เพิ่มบรรทัดนี้
+let doneResolver = null;
+
+let mockConnectedPortName = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -124,30 +128,41 @@ ipcMain.handle("serial:connect", async (event, portName) => {
         // ตั้ง parser อ่านทีละบรรทัด เพื่อรับ ack / telemetry จาก ESP32
         parser = port.pipe(new ReadlineParser({ delimiter: "\n" }));
         parser.on("data", (line) => {
-          try {
-            const msg = JSON.parse(line);
-            mainWindow?.webContents.send("serial:data", msg);
-          } catch {
-            // ไม่ใช่ JSON ที่ถูกต้อง — ข้ามไป (เช่น log debug จากบอร์ด)
-          }
-        });
 
-        port.on("close", () => {
-          mainWindow?.webContents.send("serial:data", { type: "disconnected" });
-        });
+    line = line.trim();
 
-        resolve({ ok: true, port: portName });
-      });
+    console.log("ESP32 >", line);
 
-      port.once("error", (err) => {
-        console.error("[serial] port error:", err.message);
-      });
-    } catch (err) {
-      resolve({ ok: false, error: err.message });
+    // ถ้า ESP32 ส่ง DONE
+    if (line === "DONE") {
+
+        if (doneResolver) {
+
+            doneResolver(true);
+
+            doneResolver = null;
+
+        }
+
+        return;
+
     }
-  });
-});
 
+    // JSON เดิม
+    try {
+
+        const msg = JSON.parse(line);
+
+        mainWindow?.webContents.send("serial:data", msg);
+
+    }
+    catch {
+
+        // ignore
+
+    }
+
+});
 ipcMain.handle("serial:disconnect", async () => {
   if (!SerialPort) {
     mockConnectedPortName = null;
@@ -167,6 +182,16 @@ ipcMain.handle("serial:status", async () => {
     return { connected: mockConnectedPortName !== null, port: mockConnectedPortName, mock: true };
   }
   return { connected: !!port?.isOpen, port: port?.path ?? null };
+});
+
+ipcMain.handle("serial:waitUntilDone", () => {
+
+    return new Promise((resolve) => {
+
+        doneResolver = resolve;
+
+    });
+
 });
 
 ipcMain.handle("serial:send", async (event, data) => {
