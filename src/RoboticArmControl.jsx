@@ -339,7 +339,14 @@ function useArmScene(containerRef, joints, wireframe) {
 
       const model = gltf.scene;
       scene.add(model);
-      model.scale.set(5, 5, 5);
+
+      model.scale.set(5,5,5);
+      
+      const box = new THREE.Box3().setFromObject(model);
+      const minY = box.min.y;
+      
+      // ยกโมเดลขึ้นให้ฐานแตะพื้น
+      model.position.y -= minY;
       console.log("===== MODEL OBJECTS =====");
       
       model.traverse((obj)=>{
@@ -413,9 +420,13 @@ function useArmScene(containerRef, joints, wireframe) {
     // J4 — ข้อมือ pitch รอบแกน Z
     s.wrist.rotation.y = d(-joints.j4);
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
-    const fingerSpread = (joints.j5 / 100) * 0.03;
-    s.fingerL.position.y = -(0.015 + fingerSpread);
-    s.fingerR.position.y = +(0.015 + fingerSpread);
+    const spread = (joints.j5 / 100) * 0.03;
+
+    s.fingerL.position.copy(s.fingerLHome);
+    s.fingerR.position.copy(s.fingerRHome);
+    
+    s.fingerL.position.y -= spread;
+    s.fingerR.position.y += spread;
 
     s.baseGroup.updateMatrixWorld(true);
 
