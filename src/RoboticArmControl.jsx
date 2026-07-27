@@ -428,8 +428,8 @@ function useArmScene(containerRef, joints, wireframe) {
     s.fingerL.position.copy(s.fingerLHome);
     s.fingerR.position.copy(s.fingerRHome);
     
-    s.fingerL.position.y -= spread;
-    s.fingerR.position.y += spread;
+    s.fingerL.position.x -= spread;
+    s.fingerR.position.x += spread;
 
     s.baseGroup.updateMatrixWorld(true);
 
