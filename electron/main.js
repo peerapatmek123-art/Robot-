@@ -199,8 +199,16 @@ ipcMain.handle("serial:connect", async (event, portName) => {
       port.once("error", (err) => {
 
         console.error(err);
-
-      });
+    
+        resolve({
+    
+            ok: false,
+    
+            error: err.message,
+    
+        });
+    
+    });
 
     } catch (err) {
 
