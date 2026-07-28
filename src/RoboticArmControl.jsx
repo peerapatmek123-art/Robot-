@@ -834,7 +834,7 @@ export default function RoboticArmControl() {
         if (cancelPlaybackRef.current) break;
 
         const target = list[i].joints;
-
+       
         setPlayIndex(i);
 
         setPlayProgress(0);
@@ -897,7 +897,7 @@ export default function RoboticArmControl() {
         // ==========================
         // รอ ESP32 DONE
         // ==========================
-
+        current = target;
         await window.electronAPI.waitUntilDone();
 
     }
