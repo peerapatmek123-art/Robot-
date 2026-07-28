@@ -898,7 +898,7 @@ export default function RoboticArmControl() {
         // Animation บน Three.js
         // ==========================
 
-        const current = { ...joints };
+        let current = { ...joints };
 
         const duration = 600;
 
