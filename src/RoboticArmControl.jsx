@@ -616,16 +616,54 @@ export default function RoboticArmControl() {
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง (ดู electron/preload.js)
   // ถ้ารันในเบราว์เซอร์ธรรมดา (เช่นตอน dev ด้วย `npm run dev`) จะ mock พอร์ตไว้ให้แทน
-  useEffect(() => {
-    if (window.electronAPI?.listPorts) {
-      window.electronAPI.listPorts().then((list) => {
-        if (list?.length) {
-          setPorts(list);
-          setSelectedPort(list[0]);
+    const refreshPorts = useCallback(async () => {
+
+    if (!window.electronAPI?.listPorts)
+        return;
+
+    try {
+
+        const list = await window.electronAPI.listPorts();
+
+        setPorts(list);
+
+        if (list.length > 0) {
+
+            if (!list.includes(selectedPort)) {
+
+                setSelectedPort(list[0]);
+
+            }
+
+        } else {
+
+            setSelectedPort("");
+
         }
-      }).catch(() => {});
+
+    } catch (err) {
+
+        console.error(err);
+
     }
-  }, []);
+
+}, [selectedPort]);
+  useEffect(() => {
+
+    refreshPorts();
+
+}, [refreshPorts]);
+  useEffect(() => {
+
+    const timer = setInterval(() => {
+
+        refreshPorts();
+
+    }, 1000);
+
+    return () => clearInterval(timer);
+
+}, [refreshPorts]);
 
   // เชื่อมต่อจริงผ่าน window.electronAPI แล้วตรวจสอบสถานะกลับมาแทนการเดา/ตั้งค่าเอง
   // ถ้าไม่ได้รันในแอป Electron (เช่น `npm run dev` ในเบราว์เซอร์เฉยๆ) จะไม่มีทางเชื่อมต่อ
