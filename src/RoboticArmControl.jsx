@@ -616,7 +616,7 @@ export default function RoboticArmControl() {
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง (ดู electron/preload.js)
   // ถ้ารันในเบราว์เซอร์ธรรมดา (เช่นตอน dev ด้วย `npm run dev`) จะ mock พอร์ตไว้ให้แทน
-    const refreshPorts = useCallback(async () => {
+  const refreshPorts = useCallback(async () => {
 
     if (!window.electronAPI?.listPorts)
         return;
@@ -627,17 +627,17 @@ export default function RoboticArmControl() {
 
         setPorts(list);
 
-        if (list.length > 0) {
-
-            if (!list.includes(selectedPort)) {
-
-                setSelectedPort(list[0]);
-
-            }
-
-        } else {
+        if (list.length === 0) {
 
             setSelectedPort("");
+            setConnected(false);
+            return;
+
+        }
+
+        if (!list.includes(selectedPort)) {
+
+            setSelectedPort(list[0]);
 
         }
 
@@ -698,15 +698,18 @@ export default function RoboticArmControl() {
   }, []);
 
   // ปุ่มสถานะไม่สามารถกดสลับเองได้อีกต่อไป — กดได้แค่ตอน "ไม่ได้เชื่อมต่อ" เพื่อลองเชื่อมต่อใหม่
-  const handleRetryConnection = () => {
-    if (!connected && !connecting) attemptConnect(selectedPort);
-  };
+  const handleRetryConnection = async () => {
+
+    if (!selectedPort)
+        return;
+
+    await attemptConnect(selectedPort);
+
+};
 
   // เชื่อมต่ออัตโนมัติเมื่อเปลี่ยนพอร์ต แล้วตรวจสอบสถานะจริงซ้ำเป็นระยะ เพื่อให้ตัวบ่งชี้
   // สะท้อนการเชื่อมต่อฮาร์ดแวร์จริง ไม่ใช่แค่ค่าที่เคยตั้งไว้ครั้งเดียว
-  useEffect(() => {
-    attemptConnect(selectedPort);
-  }, [selectedPort, attemptConnect]);
+  
 
   useEffect(() => {
     const id = setInterval(checkConnectionStatus, 4000);
