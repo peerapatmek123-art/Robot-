@@ -423,15 +423,15 @@ function useArmScene(containerRef, joints, wireframe) {
     // J4 — ข้อมือ pitch รอบแกน Z
     s.wrist.rotation.y = d(-joints.j4);
     // J5 — ปลายจับ symmetric: แปลง 0..100% → กางนิ้วออก 0..0.13 units
-    const spread = (joints.j5 / 100) * 0.15;
+    const spread = (joints.j5 / 100) * 0.01;
 
-// กลับสู่ตำแหน่งเริ่มต้น
+    // กลับสู่ตำแหน่งเริ่มต้น
     s.fingerL.position.copy(s.fingerLHome);
     s.fingerR.position.copy(s.fingerRHome);
     
-    // เลื่อนตามแกน Local
-    s.fingerL.translateY(-spread);
-    s.fingerR.translateY(spread);
+    // เลื่อนเข้าหากัน
+    s.fingerL.translateY(spread);
+    s.fingerR.translateY(-spread);
     
     s.baseGroup.updateMatrixWorld(true);
 
