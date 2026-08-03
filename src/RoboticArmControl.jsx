@@ -716,11 +716,10 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       // (ปลายนิ้วจริง) อยู่ใน "พิกัดโลกที่ผ่าน model.scale(5x) แล้ว" อยู่แล้ว จึงไม่ต้องคูณ
       // modelScale ซ้ำอีกชั้นตอนกำหนดขนาด — เดิมคูณซ้ำ (0.2 * 5 = 1.0) ทำให้ลูกศรใหญ่เท่าๆ
       // กับความยาวแขนทั้งชุด ลากยากเพราะแกนทับกันเอง จึงตัดตัวคูณซ้ำนี้ออกและลดขนาดฐานลง
-      const gizmoLen = 0.11;
+      const gizmoLen = 0.17;
 
       // พื้นที่คลิก "โปร่งใส" ใหญ่กว่ารูปที่มองเห็นจริงพอประมาณ เพื่อให้จิ้ม/ลากง่ายขึ้น
-      // (ลดจากเดิมที่ padding เยอะเกินจนพื้นที่คลิกของแต่ละแกนทับกันเอง เลือกแกนผิดบ่อย)
-      const HIT_PADDING = 1.8;
+      const HIT_PADDING = 2.0;
 
 
       function makeArrow(dir, color, axis) {
@@ -991,15 +990,21 @@ export default function RoboticArmControl() {
     const s = sceneApiRef.current;
     if (!s || !s.ready) return;
     const cur = ikTargetRef.current;
+
+    // กันการกระโดดผิดปกติในเฟรมเดียว (เช่น มุมกล้องเกือบขนานกับระนาบลาก ทำให้ ray-plane
+    // intersection ขยับไกลผิดปกติจากการขยับเมาส์เพียงเล็กน้อย) — จำกัด step ต่อเฟรมไว้
+    const MAX_STEP = 0.05; // เมตร ต่อ pointermove event
+    const clampStep = (v) => Math.max(-MAX_STEP, Math.min(MAX_STEP, v));
+
     const next =
       axis === "xyz"
         ? {
             ...cur,
-            x: (parseFloat(cur.x) || 0) + delta.x,
-            y: (parseFloat(cur.y) || 0) + delta.y,
-            z: (parseFloat(cur.z) || 0) + delta.z,
+            x: (parseFloat(cur.x) || 0) + clampStep(delta.x),
+            y: (parseFloat(cur.y) || 0) + clampStep(delta.y),
+            z: (parseFloat(cur.z) || 0) + clampStep(delta.z),
           }
-        : { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + delta };
+        : { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + clampStep(delta) };
 
     const modelScale = s.modelScale || 1;
     const targetWorld = new THREE.Vector3(
@@ -1008,17 +1013,22 @@ export default function RoboticArmControl() {
       parseFloat(next.z) || 0
     ).multiplyScalar(modelScale);
     // ไล่ CCD จาก "ท่าปัจจุบันของโมเดลจริง" (ไม่ reset) — ต่อเนื่องทุก pointermove event
-    const result = s.numericIK(targetWorld, 8);
-    if (result.reachedDist > 0.02 * modelScale) {
-      // ไปไม่ถึงเป้าหมายจริง (นอกพิสัย/ติดขอบเขตมุม) — ไม่ขยับ ikTarget ต่อในทิศทางนั้น
-      // (ค่ามุมข้อต่อได้ถูกดันเข้าใกล้ที่สุดเท่าที่ทำได้แล้วโดย numericIK ข้างบน แต่เราจะไม่รับ
-      // ตำแหน่งเป้าหมายที่ไปไม่ถึงจริงมาเป็น ikTarget ใหม่ เพื่อไม่ให้ตัวเลขวิ่งหนีปลายแขนจริง)
-      s.setChainDegrees(jointsRef.current);
-      return;
-    }
-    ikTargetRef.current = next;
-    setIkTarget(next);
-    setIkError("");
+    const result = s.numericIK(targetWorld, 14);
+
+    // ซิงก์ ikTarget กับ "ตำแหน่งที่ไปถึงจริง" เสมอ (ไม่ใช่ตำแหน่งที่ลากขอไว้ดิบๆ)
+    // เดิมถ้าไปไม่ถึงจะ setChainDegrees สะบัดกลับไปตำแหน่งก่อนหน้าทันที แล้วพอลากกลับเข้า
+    // พิสัยอีกครั้งค่าที่สะสมไว้ทำให้กระโดดพรวดเดียว — อาการนี้คือ "กระตุก" ที่เจอ
+    // ตอนนี้ให้แขนหยุดค้างที่ "ขอบเขตที่ไปถึงได้จริง" เสมอ ไม่มีการสะบัดกลับ/กระโดดทีหลัง
+    const actualTip = s.getTipMidWorld(new THREE.Vector3()).divideScalar(modelScale);
+    const actualNext = { x: actualTip.x, y: actualTip.y, z: actualTip.z };
+
+    ikTargetRef.current = actualNext;
+    setIkTarget(actualNext);
+    setIkError(
+      result.reachedDist > 0.02 * modelScale
+        ? "ตำแหน่งอยู่นอกพิสัยของแขนกล — แขนค้างที่ขอบเขตที่ไปถึงได้จริง"
+        : ""
+    );
     const newJoints = { j1: result.j1, j2: result.j2, j3: result.j3, j4: result.j4, j5: jointsRef.current.j5 };
     jointsRef.current = newJoints;
     setJoints(newJoints);
