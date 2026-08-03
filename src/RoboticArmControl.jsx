@@ -27,6 +27,89 @@ const C = {
 
 const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 
+// ---------------------------------------------------------------------------
+// Robot arm link lengths (เมตร — ปรับตามแขนกลจริง)
+// L1 = ความสูงฐาน-ไหล่, L2 = แขนบน (ไหล่-ข้อศอก), L3 = แขนล่าง (ข้อศอก-ข้อมือ)
+// ---------------------------------------------------------------------------
+const L1 = 0.10; // ความสูงไหล่จากพื้น (m)
+const L2 = 0.105; // ความยาวแขนบน Upper arm (m)
+const L3 = 0.096; // ความยาวแขนล่าง Forearm (m)
+
+/**
+ * solveIK — คำนวณมุม Joint จากตำแหน่งปลายแขน (Analytic 2-link planar IK)
+ * @param {number} x  - ระยะแกน X จากศูนย์กลางฐาน (m)
+ * @param {number} y  - ความสูงจากพื้น (m)
+ * @param {number} z  - ระยะแกน Z (depth) จากศูนย์กลางฐาน (m)
+ * @returns {{ ok: boolean, j1: number, j2: number, j3: number, j4: number }}
+ *   มุมเป็นองศา; ok=false หากตำแหน่งอยู่นอกพิสัย (unreachable)
+ */
+function solveIK(x, y, z) {
+  // J1: หมุนฐานรอบแกน Y — มองจากบน คือ atan2(x, z)
+  const j1 = THREE.MathUtils.radToDeg(Math.atan2(x, z));
+
+  // ระยะแนวนอนจากแกนหมุน J2 ถึงปลายแขน (projection on XZ plane)
+  const r = Math.sqrt(x * x + z * z);
+  // ความสูงจากไหล่ถึงปลายแขน
+  const dy = y - L1;
+
+  // ระยะตรงจากไหล่ถึงปลายแขน
+  const dist = Math.sqrt(r * r + dy * dy);
+
+  // ตรวจสอบ reachability
+  if (dist > L2 + L3 - 0.001) {
+    return { ok: false, j1, j2: 0, j3: 0, j4: 0 };
+  }
+  if (dist < Math.abs(L2 - L3) + 0.001) {
+    return { ok: false, j1, j2: 0, j3: 0, j4: 0 };
+  }
+
+  // กฎ cosine สำหรับข้อศอก (J3)
+  const cosJ3 = (dist * dist - L2 * L2 - L3 * L3) / (2 * L2 * L3);
+  const j3Rad = Math.acos(THREE.MathUtils.clamp(cosJ3, -1, 1));
+
+  // J2: มุมไหล่ — alpha (ยกแขน) + beta (มุมภายใน triangle)
+  const alpha = Math.atan2(dy, r);
+  const sinBeta = (L3 * Math.sin(j3Rad)) / dist;
+  const beta = Math.asin(THREE.MathUtils.clamp(sinBeta, -1, 1));
+  const j2Rad = alpha + beta;
+
+  // J4: ทำให้ปลายแขนชี้แนวนอน (wrist compensation)
+  const j4Rad = -(j2Rad - j3Rad);
+
+  return {
+    ok: true,
+    j1: THREE.MathUtils.clamp(j1, -180, 180),
+    j2: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j2Rad), -90, 90),
+    j3: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j3Rad), -135, 135),
+    j4: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j4Rad), -135, 135),
+  };
+}
+
+/**
+ * forwardKinematics — คำนวณตำแหน่งปลายแขนจากมุม Joint (FK)
+ * ใช้แสดง current end-effector position
+ */
+function forwardKinematics(j1deg, j2deg, j3deg) {
+  const j1 = THREE.MathUtils.degToRad(j1deg);
+  const j2 = THREE.MathUtils.degToRad(j2deg);
+  const j3 = THREE.MathUtils.degToRad(j3deg);
+
+  // ความสูงไหล่
+  const shoulderY = L1;
+  // ตำแหน่งข้อศอก (ใน plane ที่หมุนตาม J1)
+  const elbowR = L2 * Math.cos(j2);
+  const elbowY = shoulderY + L2 * Math.sin(j2);
+  // ตำแหน่งปลายแขน
+  const wristR = elbowR + L3 * Math.cos(j2 - j3);
+  const wristY = elbowY + L3 * Math.sin(j2 - j3);
+
+  return {
+    x: parseFloat((wristR * Math.sin(j1)).toFixed(4)),
+    y: parseFloat(wristY.toFixed(4)),
+    z: parseFloat((wristR * Math.cos(j1)).toFixed(4)),
+  };
+}
+
 // J1..J5 limits — ใช้กำหนดขอบเขตของช่องกรอกตำแหน่งเป้าหมาย
 const JOINTS = [
   { key: "j1", label: "J1", sub: "ฐาน", min: -180, max: 180, unit: "deg" },
@@ -446,6 +529,62 @@ export default function RoboticArmControl() {
   const jointsRef = useRef(HOME);
   useEffect(() => { jointsRef.current = joints; }, [joints]);
 
+  // ---- Inverse Kinematics panel state ----
+  const ikHome = forwardKinematics(HOME.j1, HOME.j2, HOME.j3);
+  const [ikTarget, setIkTarget] = useState({ x: ikHome.x, y: ikHome.y, z: ikHome.z });
+  const [ikError, setIkError] = useState("");
+  const [ikMode, setIkMode] = useState(false); // toggle IK / Joint input panel
+
+  // FK readout — อัปเดตทุกครั้งที่ joint เปลี่ยน
+  const fkPos = forwardKinematics(joints.j1, joints.j2, joints.j3);
+
+  const handleIkMove = useCallback(() => {
+    if (moving) return;
+    const { x, y, z } = ikTarget;
+    const result = solveIK(parseFloat(x) || 0, parseFloat(y) || 0, parseFloat(z) || 0);
+    if (!result.ok) {
+      setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
+      return;
+    }
+    setIkError("");
+    // อัปเดต targets แล้วส่งต่อให้ handleMove ทำงาน
+    const newTargets = {
+      j1: result.j1,
+      j2: result.j2,
+      j3: result.j3,
+      j4: result.j4,
+      j5: jointsRef.current.j5,
+    };
+    setTargets(newTargets);
+
+    // Animate ทันทีจาก joints ปัจจุบัน
+    const from = { ...jointsRef.current };
+    const to = { ...newTargets };
+    const duration = motionType === "LIN" ? 1400 : motionType === "CIRC" ? 1800 : 1100;
+    setMoving(true);
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const e = easeInOutCubic(t);
+      const next = {};
+      JOINTS.forEach((j) => {
+        let val = from[j.key] + (to[j.key] - from[j.key]) * e;
+        if (motionType === "CIRC" && (j.key === "j2" || j.key === "j3")) {
+          val += Math.sin(t * Math.PI) * 8 * (j.key === "j2" ? 1 : -1);
+        }
+        next[j.key] = val;
+      });
+      setJoints(next);
+      if (t < 1) {
+        animRef.current = requestAnimationFrame(step);
+      } else {
+        setJoints(to);
+        setMoving(false);
+      }
+    }
+    animRef.current = requestAnimationFrame(step);
+  }, [moving, motionType, ikTarget]);
+
   const handleJointDelta = useCallback((key, delta) => {
     if (moving) return; // อย่าให้ลากพร้อมกับตอนที่ Move กำลังเล่น animation
     const def = JOINTS.find((j) => j.key === key);
@@ -646,14 +785,32 @@ export default function RoboticArmControl() {
             </div>
           )}
 
-          {/* ---------------- Kinematic Move panel (PTP / LIN / CIRC) ---------------- */}
+          {/* ---------------- Kinematic Move panel (IK / Joint tabs) ---------------- */}
           <div
-            className="absolute top-4 right-4 w-64 rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "rgba(16,21,42,0.92)", border: `1px solid ${C.border}`, backdropFilter: "blur(6px)" }}
+            className="absolute top-4 right-4 w-68 rounded-2xl overflow-hidden shadow-2xl"
+            style={{ width: 272, background: "rgba(16,21,42,0.92)", border: `1px solid ${C.border}`, backdropFilter: "blur(6px)" }}
           >
-            <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
-              <Navigation size={14} color={C.accent} />
-              <span className="text-xs font-semibold" style={{ color: C.text }}>Kinematic Move</span>
+            {/* Header + tab switcher */}
+            <div className="flex items-center justify-between px-4 pt-3.5 pb-2.5" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+              <div className="flex items-center gap-2">
+                <Navigation size={14} color={C.accent} />
+                <span className="text-xs font-semibold" style={{ color: C.text }}>Kinematic Move</span>
+              </div>
+              <div className="flex rounded-lg overflow-hidden" style={{ border: `1px solid ${C.borderSoft}` }}>
+                {[{ key: false, label: "Joint" }, { key: true, label: "IK (XYZ)" }].map(({ key, label }) => (
+                  <button
+                    key={String(key)}
+                    onClick={() => { setIkMode(key); setIkError(""); }}
+                    className="px-2.5 py-1 text-[10px] font-semibold transition-colors"
+                    style={{
+                      background: ikMode === key ? C.accent : C.panelAlt,
+                      color: ikMode === key ? "#fff" : C.sub,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Motion type selector */}
@@ -681,31 +838,96 @@ export default function RoboticArmControl() {
               </div>
             </div>
 
-            {/* Target joint inputs */}
-            <div className="px-4 pt-3.5 flex flex-col gap-2">
-              {JOINTS.map((j) => (
-                <div key={j.key} className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] w-16 shrink-0" style={{ color: C.sub }}>
-                    {j.label} <span style={{ color: C.subDim }}>({j.unit === "%" ? "%" : "°"})</span>
-                  </span>
-                  <input
-                    type="number"
-                    value={targets[j.key]}
-                    min={j.min}
-                    max={j.max}
-                    onChange={(e) => handleTargetChange(j.key, j.min, j.max, e.target.value)}
-                    disabled={moving}
-                    className="flex-1 min-w-0 rounded-lg px-2 py-1 text-[12px] font-mono text-right outline-none"
-                    style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text, opacity: moving ? 0.5 : 1 }}
-                  />
+            {ikMode ? (
+              /* ===== IK (XYZ) tab ===== */
+              <div className="px-4 pt-3.5 flex flex-col gap-2.5">
+                {/* FK readout — ตำแหน่งปัจจุบันของปลายแขน */}
+                <div className="rounded-xl px-3 py-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
+                  <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: C.subDim }}>
+                    📍 ตำแหน่งปัจจุบัน (FK)
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[["X", fkPos.x], ["Y", fkPos.y], ["Z", fkPos.z]].map(([axis, val]) => (
+                      <div key={axis} className="text-center">
+                        <div className="text-[10px]" style={{ color: C.subDim }}>{axis}</div>
+                        <div className="text-[12px] font-mono" style={{ color: C.accent }}>{val.toFixed(3)}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[9px] mt-1 text-center" style={{ color: C.subDim }}>หน่วย: เมตร (m)</div>
                 </div>
-              ))}
-            </div>
+
+                {/* IK target inputs */}
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: C.subDim }}>
+                    🎯 ตำแหน่งเป้าหมาย (m)
+                  </div>
+                  {[
+                    { axis: "x", label: "X", hint: "ซ้าย ↔ ขวา", color: "#ef4444" },
+                    { axis: "y", label: "Y", hint: "ลง ↕ ขึ้น", color: "#22c55e" },
+                    { axis: "z", label: "Z", hint: "หน้า ↔ หลัง", color: "#3b6cf6" },
+                  ].map(({ axis, label, hint, color }) => (
+                    <div key={axis} className="flex items-center justify-between gap-2 mb-1.5">
+                      <div className="w-16 shrink-0">
+                        <span className="text-[12px] font-bold" style={{ color }}>{label}</span>
+                        <span className="text-[9px] block" style={{ color: C.subDim }}>{hint}</span>
+                      </div>
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={ikTarget[axis]}
+                        onChange={(e) => {
+                          setIkTarget((prev) => ({ ...prev, [axis]: e.target.value }));
+                          setIkError("");
+                        }}
+                        disabled={moving}
+                        className="flex-1 min-w-0 rounded-lg px-2 py-1.5 text-[12px] font-mono text-right outline-none"
+                        style={{ background: C.track, border: `1px solid ${C.borderSoft}`, color: C.text, opacity: moving ? 0.5 : 1 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {/* IK error message */}
+                {ikError && (
+                  <div className="rounded-lg px-3 py-2 text-[11px]" style={{ background: C.redSoft, border: `1px solid ${C.red}`, color: C.red }}>
+                    ⚠️ {ikError}
+                  </div>
+                )}
+
+                {/* Reachability hint */}
+                <div className="text-[10px] rounded-lg px-3 py-2" style={{ background: C.accentSoft, color: C.sub }}>
+                  พิสัยสูงสุด ≈ {(L2 + L3).toFixed(3)} m จากแกนหมุน J1
+                  <br/>ความสูงไหล่ L1 = {L1.toFixed(3)} m
+                </div>
+              </div>
+            ) : (
+              /* ===== Joint tab (เดิม) ===== */
+              <div className="px-4 pt-3.5 flex flex-col gap-2">
+                {JOINTS.map((j) => (
+                  <div key={j.key} className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] w-16 shrink-0" style={{ color: C.sub }}>
+                      {j.label} <span style={{ color: C.subDim }}>({j.unit === "%" ? "%" : "°"})</span>
+                    </span>
+                    <input
+                      type="number"
+                      value={targets[j.key]}
+                      min={j.min}
+                      max={j.max}
+                      onChange={(e) => handleTargetChange(j.key, j.min, j.max, e.target.value)}
+                      disabled={moving}
+                      className="flex-1 min-w-0 rounded-lg px-2 py-1 text-[12px] font-mono text-right outline-none"
+                      style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text, opacity: moving ? 0.5 : 1 }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Move button */}
             <div className="px-4 py-3.5">
               <button
-                onClick={handleMove}
+                onClick={ikMode ? handleIkMove : handleMove}
                 disabled={moving || !modelReady}
                 className="w-full flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold transition-colors"
                 style={{
@@ -716,7 +938,11 @@ export default function RoboticArmControl() {
                 }}
               >
                 <MoveIcon size={14} />
-                {moving ? `กำลังเคลื่อนที่ (${motionType})...` : `Move (${motionType})`}
+                {moving
+                  ? `กำลังเคลื่อนที่ (${motionType})...`
+                  : ikMode
+                    ? `IK Move (${motionType})`
+                    : `Move (${motionType})`}
               </button>
             </div>
           </div>
