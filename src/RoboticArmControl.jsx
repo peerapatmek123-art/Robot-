@@ -338,6 +338,15 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       return hits.length ? hits[0].object.userData : null;
     }
 
+    // แปลงตำแหน่ง pointer event -> THREE.Ray จากกล้อง (ใช้กับ ray.intersectPlane ตอนลาก gizmo)
+    function pointerRay(e) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointerNDC, camera);
+      return raycaster.ray;
+    }
+
     function onPointerDown(e) {
       const spec = pickHandle(e);
       const s = sceneRef.current;
