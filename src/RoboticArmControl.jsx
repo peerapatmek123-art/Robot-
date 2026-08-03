@@ -442,7 +442,10 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
           const t = _intersectPoint.clone().sub(handleDrag.lineOrigin).dot(handleDrag.lineDir);
           const deltaT = t - handleDrag.lastT;
           handleDrag.lastT = t;
-          onIkDragRef.current?.(handleDrag.spec.axis, deltaT / modelScale);
+          // ลูกศร Z ชี้ (0,0,-1) แต่ค่า IK target Z ใช้ระบบ +Z = ข้างหน้า
+          // จึงต้อง negate deltaT ของ Z เพื่อให้ทิศตรงกัน (ลากลูกศรออก → Z IK เพิ่ม)
+          const sign = handleDrag.spec.axis === "z" ? -1 : 1;
+          onIkDragRef.current?.(handleDrag.spec.axis, (deltaT * sign) / modelScale);
         }
         return;
       }
@@ -783,12 +786,15 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       s.gizmoParts = {};
 
       // ---- ลูกศรเลื่อน XYZ (world space) -> ผูกกับ IK จริง ----
+      // หมายเหตุ: กล้องเริ่มต้นมอง -Z (azimuth ~0.28π ทำให้ +Z อยู่ "ด้านหลัง" ในจอ)
+      // พลิกลูกศร Z ให้ชี้ (0,0,-1) เพื่อให้ทิศ "ข้างหน้า" ตรงกับสัญชาตญาณผู้ใช้
+      // และ deltaT ที่ได้จาก ray-plane projection จะถูก negate ก่อนส่งต่อ ให้ Z IK target ถูกทิศ
       const translateGizmo = new THREE.Group();
       translateGizmo.name = "IK_TranslateGizmo";
       const arrows = [
         { key: "x", data: makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "x") },
         { key: "y", data: makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "y") },
-        { key: "z", data: makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "z") },
+        { key: "z", data: makeArrow(new THREE.Vector3(0, 0, -1), 0x3b6cf6, "z") },
       ];
       arrows.forEach(({ key, data }) => {
         translateGizmo.add(data.grp);
