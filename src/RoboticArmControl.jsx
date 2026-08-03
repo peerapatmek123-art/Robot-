@@ -669,7 +669,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       // ไม่ว่ารูปทรง/ทิศทางของมือคีบจะเป็นอย่างไรก็ตาม ไม่ต้องพึ่งสมมติฐานเรื่องทิศทาง L4 เลย
       const ikChain = [
         { obj: s.baseGroup, axis: "y", limMin: -180, limMax: 180 },
-        { obj: s.shoulder, axis: "x", limMin: -90, limMax: 90, negate: true },
+        { obj: s.shoulder, axis: "x", limMin: 90, limMax: -90, negate: true },
         { obj: s.elbow, axis: "y", limMin: -135, limMax: 135 },
         { obj: s.wrist, axis: "y", limMin: -135, limMax: 135 },
       ];
