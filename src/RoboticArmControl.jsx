@@ -25,7 +25,7 @@ const C = {
   track: "#1a2140",
 };
 
-const HOME = { j1: 0, j2: 0, j3: 0, j4: 0, j5: 0 };
+const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 
 // J1..J5 limits — ใช้กำหนดขอบเขตของช่องกรอกตำแหน่งเป้าหมาย
 const JOINTS = [
@@ -51,10 +51,12 @@ function easeInOutCubic(t) {
 // 3D Arm Scene — โหลดโมเดล GLTF จาก Blender แล้วอ่าน Joint hierarchy
 // จากชื่อ object ที่ตั้งไว้ในไฟล์โมเดล
 // ---------------------------------------------------------------------------
-function useArmScene(containerRef, joints, wireframe) {
+function useArmScene(containerRef, joints, wireframe, onJointDelta) {
   const sceneRef = useRef(null);
   const [modelReady, setModelReady] = useState(false);
   const [modelError, setModelError] = useState(false);
+  const onJointDeltaRef = useRef(onJointDelta);
+  useEffect(() => { onJointDeltaRef.current = onJointDelta; }, [onJointDelta]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -162,7 +164,32 @@ function useArmScene(containerRef, joints, wireframe) {
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
+    // ---- Gizmo handle drag state (ลากลูกศร/วงแหวนที่ปลายแขนเพื่อขยับ joint) ----
+    const raycaster = new THREE.Raycaster();
+    const pointerNDC = new THREE.Vector2();
+    const handleDrag = { active: false, spec: null, lastX: 0, lastY: 0 };
+
+    function pickHandle(e) {
+      const s = sceneRef.current;
+      if (!s || !s.ready || !s.pickables || !s.pickables.length) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointerNDC, camera);
+      const hits = raycaster.intersectObjects(s.pickables, false);
+      return hits.length ? hits[0].object.userData : null;
+    }
+
     function onPointerDown(e) {
+      const spec = pickHandle(e);
+      if (spec && onJointDeltaRef.current) {
+        handleDrag.active = true;
+        handleDrag.spec = spec;
+        handleDrag.lastX = e.clientX;
+        handleDrag.lastY = e.clientY;
+        renderer.domElement.style.cursor = "grabbing";
+        return;
+      }
       controls.dragging = true;
       controls.panMode = e.shiftKey || controls.panMode;
       controls.lastX = e.clientX;
@@ -170,6 +197,17 @@ function useArmScene(containerRef, joints, wireframe) {
       renderer.domElement.style.cursor = "grabbing";
     }
     function onPointerMove(e) {
+      if (handleDrag.active) {
+        const dx = e.clientX - handleDrag.lastX;
+        const dy = e.clientY - handleDrag.lastY;
+        handleDrag.lastX = e.clientX;
+        handleDrag.lastY = e.clientY;
+        const spec = handleDrag.spec;
+        const raw = spec.useAxis === "x" ? dx : dy;
+        const delta = raw * spec.sens;
+        onJointDeltaRef.current?.(spec.jointAxis, delta);
+        return;
+      }
       if (!controls.dragging) return;
       const dx = e.clientX - controls.lastX;
       const dy = e.clientY - controls.lastY;
@@ -184,6 +222,8 @@ function useArmScene(containerRef, joints, wireframe) {
       }
     }
     function onPointerUp() {
+      handleDrag.active = false;
+      handleDrag.spec = null;
       controls.dragging = false;
       renderer.domElement.style.cursor = "grab";
     }
@@ -215,6 +255,7 @@ function useArmScene(containerRef, joints, wireframe) {
       fingerR: null,
       endEffector: null,
       allMeshes: [],
+      pickables: [],
       ready: false,
     };
 
@@ -261,20 +302,67 @@ function useArmScene(containerRef, joints, wireframe) {
 
       s.endEffector = s.gripperGroup;
 
-      // ---- Gizmo ลูกศรที่ปลายแขน (ปลายจับ) แสดงแกน X/Y/Z ของ tool ----
-      // แดง = X, เขียว = Y, น้ำเงิน = Z (ตามธรรมเนียม CIRA Core / kinematic tool)
-      const gizmoLen = 0.42;
+      // ---- Gizmo ที่ปลายแขน: ลูกศรเลื่อน (translate) + วงแหวนหมุน (rotate) ----
+      // ลากลูกศร/วงแหวนแล้วแขนจะขยับ joint ที่ผูกไว้ตามไปด้วยแบบเรียลไทม์
+      // แดง = X, เขียว = Y, น้ำเงิน = Z
+      const gizmoLen = 0.2; // เล็กลงจากเดิม (เดิม 0.42)
       const gizmoGroup = new THREE.Group();
       gizmoGroup.name = "EndEffectorGizmo";
-      const axisX = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), gizmoLen, 0xef4444, gizmoLen * 0.28, gizmoLen * 0.14);
-      const axisY = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), gizmoLen, 0x22c55e, gizmoLen * 0.28, gizmoLen * 0.14);
-      const axisZ = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), gizmoLen, 0x3b6cf6, gizmoLen * 0.28, gizmoLen * 0.14);
-      [axisX, axisY, axisZ].forEach((a) => {
-        a.line.material.depthTest = false;
-        a.cone.material.depthTest = false;
-        a.renderOrder = 999;
-        gizmoGroup.add(a);
+
+      function makeArrow(dir, color, jointAxis, useAxis, sens) {
+        const shaftLen = gizmoLen * 0.7;
+        const headLen = gizmoLen * 0.3;
+        const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, shaftLen, 8), mat);
+        shaft.position.y = shaftLen / 2;
+        const head = new THREE.Mesh(new THREE.ConeGeometry(0.018, headLen, 10), mat);
+        head.position.y = shaftLen + headLen / 2;
+        const grp = new THREE.Group();
+        grp.add(shaft, head);
+        grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+        grp.renderOrder = 999;
+        const userData = { jointAxis, useAxis, sens };
+        shaft.userData = userData;
+        head.userData = userData;
+        return { grp, pickables: [shaft, head] };
+      }
+
+      function makeRing(axis, color, jointAxis, useAxis, sens) {
+        const mesh = new THREE.Mesh(
+          new THREE.TorusGeometry(gizmoLen * 0.95, 0.005, 8, 48),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, depthTest: false })
+        );
+        if (axis === "x") mesh.rotation.y = Math.PI / 2;
+        if (axis === "y") mesh.rotation.x = Math.PI / 2;
+        mesh.renderOrder = 998;
+        mesh.userData = { jointAxis, useAxis, sens };
+        return mesh;
+      }
+
+      s.pickables = [];
+
+      // ลูกศรเลื่อน: X -> J1 (ฐาน), Y -> J2 (ไหล่), Z -> J3 (ข้อศอก)
+      const arrows = [
+        makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "j1", "x", 0.4),
+        makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "j2", "y", -0.4),
+        makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "j3", "y", 0.4),
+      ];
+      arrows.forEach(({ grp, pickables }) => {
+        gizmoGroup.add(grp);
+        s.pickables.push(...pickables);
       });
+
+      // วงแหวนหมุน: รอบ X -> J4 (ข้อมือ), รอบ Y -> J1 (ฐาน), รอบ Z -> J5 (ปลายจับ)
+      const rings = [
+        makeRing("x", 0xef4444, "j4", "y", 0.5),
+        makeRing("y", 0x22c55e, "j1", "x", 0.5),
+        makeRing("z", 0x3b6cf6, "j5", "x", 0.6),
+      ];
+      rings.forEach((r) => {
+        gizmoGroup.add(r);
+        s.pickables.push(r);
+      });
+
       s.endEffector.add(gizmoGroup);
       s.gizmo = gizmoGroup;
 
@@ -358,8 +446,25 @@ export default function RoboticArmControl() {
   const jointsRef = useRef(HOME);
   useEffect(() => { jointsRef.current = joints; }, [joints]);
 
+  const handleJointDelta = useCallback((key, delta) => {
+    if (moving) return; // อย่าให้ลากพร้อมกับตอนที่ Move กำลังเล่น animation
+    const def = JOINTS.find((j) => j.key === key);
+    if (!def) return;
+    setJoints((prev) => {
+      const v = Math.max(def.min, Math.min(def.max, prev[key] + delta));
+      const next = { ...prev, [key]: v };
+      jointsRef.current = next;
+      return next;
+    });
+    setTargets((prev) => {
+      const base = prev[key] === "" || prev[key] === undefined ? jointsRef.current[key] : prev[key];
+      const v = Math.max(def.min, Math.min(def.max, base + delta));
+      return { ...prev, [key]: v };
+    });
+  }, [moving]);
+
   const viewerRef = useRef(null);
-  const { modelReady, modelError } = useArmScene(viewerRef, joints, false);
+  const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta);
 
   const handleTargetChange = (key, min, max, raw) => {
     const v = raw === "" ? "" : Math.max(min, Math.min(max, parseFloat(raw)));
