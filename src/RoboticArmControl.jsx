@@ -394,7 +394,11 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       if (spec && spec.axis && onIkDragRef.current && s && s.translateGizmo) {
         // ลากลูกศร -> โหมด IK translate ตามแกนเดียว (คำนวณผ่าน ray-plane intersection จริง)
         const gizmoPos = s.translateGizmo.position;
-        _dragLineDir.copy(AXIS_VECTORS[spec.axis]).normalize();
+        // ใช้ทิศจริงของลูกศรในโลก (หลังหมุนตาม J1) แทนทิศ world-fixed
+        // เพื่อให้ drag plane ตั้งฉากกับลูกศรที่มองเห็นจริงบนจอ
+        _dragLineDir.copy(AXIS_VECTORS[spec.axis])
+          .applyEuler(s.translateGizmo.rotation)
+          .normalize();
         camera.getWorldDirection(_camForward);
         _camRight.crossVectors(_camForward, _dragLineDir);
         if (_camRight.lengthSq() < 1e-6) _camRight.crossVectors(_camForward, camera.up);
@@ -442,10 +446,13 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
           const t = _intersectPoint.clone().sub(handleDrag.lineOrigin).dot(handleDrag.lineDir);
           const deltaT = t - handleDrag.lastT;
           handleDrag.lastT = t;
-          // ลูกศร Z ชี้ (0,0,-1) แต่ค่า IK target Z ใช้ระบบ +Z = ข้างหน้า
-          // จึงต้อง negate deltaT ของ Z เพื่อให้ทิศตรงกัน (ลากลูกศรออก → Z IK เพิ่ม)
-          const sign = handleDrag.spec.axis === "z" ? -1 : 1;
-          onIkDragRef.current?.(handleDrag.spec.axis, (deltaT * sign) / modelScale);
+          // handleDrag.lineDir คือทิศลูกศรจริงในโลก (หมุนตาม J1 แล้ว)
+          // คูณ deltaT กับทิศลูกศรเพื่อได้ delta XYZ จริงในพิกัดโลก แล้วส่งแบบ xyz
+          // วิธีนี้ทำให้ลากลูกศร Z ตามหน้าแขนกลได้ถูกต้อง ไม่ว่า J1 จะหมุนไปเท่าไหร่
+          const dx = handleDrag.lineDir.x * deltaT / modelScale;
+          const dy = handleDrag.lineDir.y * deltaT / modelScale;
+          const dz = handleDrag.lineDir.z * deltaT / modelScale;
+          onIkDragRef.current?.("xyz", { x: dx, y: dy, z: dz });
         }
         return;
       }
@@ -522,6 +529,13 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
         // ไปจริง 1:1 ตามเมาส์เสมอ) แล้วค่อย snap กลับไปตำแหน่งจริงตอนปล่อยเมาส์
         if (!handleDrag.active) {
           s.translateGizmo.position.copy(_eeWorldPos);
+        }
+        // หมุน gizmo ให้แกน Z (ลูกศรน้ำเงิน) ชี้ไปตาม "ทิศข้างหน้าของแขนกล" เสมอ
+        // ซึ่งกำหนดโดย J1 (rotation.y ของฐาน) — แขนยื่นออกตาม sin(j1), cos(j1) ในระนาบ XZ
+        // เดิมลูกศร Z ชี้ทิศคงที่ในโลก (0,0,-1) ทำให้ลากแกน Z แล้วแขนไปผิดทิศเมื่อหมุนฐาน
+        if (s.baseGroup) {
+          const j1 = s.baseGroup.rotation.y; // radians
+          s.translateGizmo.rotation.y = j1;
         }
         // คงขนาด gizmo ให้ดู "เท่าเดิมบนจอ" ไม่ว่าจะซูมเข้า/ออกแค่ไหน
         // (ไม่งั้นตอนซูมออกลูกศรจะเล็กจิ๋วจนลากยากมาก) — สเกลตามระยะกล้องจริง
