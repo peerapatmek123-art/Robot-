@@ -174,7 +174,7 @@ function easeInOutCubic(t) {
 // 3D Arm Scene — โหลดโมเดล GLTF จาก Blender แล้วอ่าน Joint hierarchy
 // จากชื่อ object ที่ตั้งไว้ในไฟล์โมเดล
 // ---------------------------------------------------------------------------
-function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
+function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sceneApiRef) {
   const sceneRef = useRef(null);
   const [modelReady, setModelReady] = useState(false);
   const [modelError, setModelError] = useState(false);
@@ -524,6 +524,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       rotateGizmo: null,
       ready: false,
     };
+    if (sceneApiRef) sceneApiRef.current = sceneRef.current;
 
     // ---- โหลดโมเดล GLTF ----
     const loader = new GLTFLoader();
@@ -612,6 +613,98 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         const measuredL4 = wristWorld.distanceTo(tipMidWorld) / modelScale;
         if (measuredL4 > 0) L4 = measuredL4;
       }
+
+      // ---- Numeric IK (CCD) จากตำแหน่งปลายนิ้วจริง ----
+      // สูตร solveIK() เดิมเป็นแบบ analytic 2-link ที่ "สมมติ" ว่าระยะ L4 ยื่นออกไปตาม
+      // แนวรัศมี (แนวเดียวกับ r) เสมอ — แต่จากตัว model จริง จุดต่อของ FingerBase กับ
+      // ArmGriper ยื่นไปตามแกน Y ของข้อมือ ไม่ใช่แกน X ทำให้สมมติฐานนั้นผิดในหลาย pose
+      // (ยิ่ง J2/J3/J4 เบี่ยงจากตำแหน่ง HOME มาก ยิ่งเพี้ยนมาก) — เป็นสาเหตุที่ลากลูกศร
+      // แล้วปลายมือคีบไปไม่ถึงจุดที่ลาก โดยเฉพาะตำแหน่งที่ไกลจาก HOME
+      //
+      // ฟังก์ชันนี้แก้ปัญหาตรงจุด: ไล่ปรับมุมข้อต่อ (CCD) โดยอ้างอิงตำแหน่ง "ปลายนิ้วจริง"
+      // (จุดกึ่งกลาง fingerLTip/fingerRTip) จากโครงกระดูกจริงของโมเดลทุกครั้ง จึงแม่นยำ
+      // ไม่ว่ารูปทรง/ทิศทางของมือคีบจะเป็นอย่างไรก็ตาม ไม่ต้องพึ่งสมมติฐานเรื่องทิศทาง L4 เลย
+      const ikChain = [
+        { obj: s.baseGroup, axis: "y", limMin: -180, limMax: 180 },
+        { obj: s.shoulder, axis: "x", limMin: -90, limMax: 90 },
+        { obj: s.elbow, axis: "y", limMin: -135, limMax: 135 },
+        { obj: s.wrist, axis: "y", limMin: -135, limMax: 135 },
+      ];
+      const _ccdP = new THREE.Vector3();
+      const _ccdE = new THREE.Vector3();
+      const _ccdV1 = new THREE.Vector3();
+      const _ccdV2 = new THREE.Vector3();
+      const _ccdCross = new THREE.Vector3();
+      const _ccdQ = new THREE.Quaternion();
+      const _ccdAxisLocalX = new THREE.Vector3(1, 0, 0);
+      const _ccdAxisLocalY = new THREE.Vector3(0, 1, 0);
+      const _ccdTipL = new THREE.Vector3();
+      const _ccdTipR = new THREE.Vector3();
+
+      function getTipMidWorld(out) {
+        s.fingerLTip.getWorldPosition(_ccdTipL);
+        s.fingerRTip.getWorldPosition(_ccdTipR);
+        return out.copy(_ccdTipL).add(_ccdTipR).multiplyScalar(0.5);
+      }
+
+      // ปรับมุมข้อต่อ (mutate live scene ตรงๆ) ให้ปลายนิ้วจริงเข้าใกล้ targetWorld (สเกลเดียวกับฉาก x5)
+      // มากที่สุดภายใต้ขอบเขตมุมของแต่ละข้อ แล้วคืนค่ามุม j1-j4 (องศา) ที่ได้
+      function numericIK(targetWorld, iterations = 14) {
+        for (let iter = 0; iter < iterations; iter++) {
+          for (let i = ikChain.length - 1; i >= 0; i--) {
+            const link = ikChain[i];
+            const joint = link.obj;
+            joint.getWorldPosition(_ccdP);
+            getTipMidWorld(_ccdE);
+            joint.getWorldQuaternion(_ccdQ);
+            const axisLocal = link.axis === "x" ? _ccdAxisLocalX : _ccdAxisLocalY;
+            const axisWorld = axisLocal.clone().applyQuaternion(_ccdQ).normalize();
+
+            _ccdV1.copy(_ccdE).sub(_ccdP);
+            _ccdV2.copy(targetWorld).sub(_ccdP);
+            _ccdV1.addScaledVector(axisWorld, -_ccdV1.dot(axisWorld));
+            _ccdV2.addScaledVector(axisWorld, -_ccdV2.dot(axisWorld));
+            if (_ccdV1.lengthSq() < 1e-10 || _ccdV2.lengthSq() < 1e-10) continue;
+            _ccdV1.normalize();
+            _ccdV2.normalize();
+            _ccdCross.crossVectors(_ccdV1, _ccdV2);
+            const sinA = _ccdCross.dot(axisWorld);
+            const cosA = _ccdV1.dot(_ccdV2);
+            let angle = Math.atan2(sinA, cosA) * 0.75; // damping กันสั่น/แกว่ง
+
+            const limRad = THREE.MathUtils.degToRad;
+            const rot = joint.rotation;
+            const cur = link.axis === "x" ? rot.x : rot.y;
+            let next = cur + angle;
+            next = Math.max(limRad(link.limMin), Math.min(limRad(link.limMax), next));
+            if (link.axis === "x") rot.x = next; else rot.y = next;
+            joint.updateMatrixWorld(true);
+          }
+        }
+        getTipMidWorld(_ccdE);
+        const reachedDist = _ccdE.distanceTo(targetWorld);
+        return {
+          j1: THREE.MathUtils.radToDeg(s.baseGroup.rotation.y),
+          j2: -THREE.MathUtils.radToDeg(s.shoulder.rotation.x),
+          j3: -THREE.MathUtils.radToDeg(s.elbow.rotation.y),
+          j4: -THREE.MathUtils.radToDeg(s.wrist.rotation.y),
+          reachedDist, // ระยะที่เหลือจากเป้าหมายจริง (สเกล x5) — ใช้เช็ค unreachable
+        };
+      }
+
+      // ตั้งข้อต่อทั้งหมดไปที่ค่า degrees ที่กำหนด (ใช้ seed ก่อนรัน CCD จากมุมที่รู้แน่ชัด เช่น HOME)
+      function setChainDegrees(j) {
+        const d = THREE.MathUtils.degToRad;
+        s.baseGroup.rotation.y = d(j.j1);
+        s.shoulder.rotation.x = d(-j.j2);
+        s.elbow.rotation.y = d(-j.j3);
+        s.wrist.rotation.y = d(-j.j4);
+        s.baseGroup.updateMatrixWorld(true);
+      }
+
+      s.numericIK = numericIK;
+      s.setChainDegrees = setChainDegrees;
+      s.getTipMidWorld = (out) => getTipMidWorld(out || new THREE.Vector3());
 
       // ---- Gizmo ที่ปลายมือคีบ (J5) ----
       // ลูกศรเลื่อน XYZ เท่านั้น (world-aligned, ไม่หมุนตามข้อต่อ)
@@ -855,35 +948,46 @@ export default function RoboticArmControl() {
   const handleIkMove = useCallback(() => {
     if (moving) return;
     const { x, y, z } = ikTarget;
-    const result = solveIK(parseFloat(x) || 0, parseFloat(y) || 0, parseFloat(z) || 0);
-    if (!result.ok) {
+    const s = sceneApiRef.current;
+    if (!s || !s.ready) return;
+    const tx = parseFloat(x) || 0, ty = parseFloat(y) || 0, tz = parseFloat(z) || 0;
+
+    // เช็ค reachability แบบหยาบก่อนด้วยสูตร analytic (เร็ว, กันเคสไกลเกินพิสัยชัดเจน)
+    const rough = solveIK(tx, ty, tz);
+    if (!rough.ok) {
+      setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
+      return;
+    }
+
+    // seed จาก HOME แล้วไล่ CCD จากปลายนิ้วจริงไปยังเป้าหมาย (แม่นยำกว่าสูตร analytic ล้วนๆ
+    // เพราะไม่ต้องสมมติทิศทางของ L4 — วัดจากตำแหน่งจริงของโมเดลทุกครั้ง)
+    const modelScale = s.modelScale || 1;
+    s.setChainDegrees(HOME);
+    const targetWorld = new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale);
+    const result = s.numericIK(targetWorld, 30);
+    if (result.reachedDist > 0.015 * modelScale) {
       setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
       return;
     }
     setIkError("");
-    // อัปเดต targets แล้วส่งต่อให้ animation ทำงาน
-    const newTargets = {
-      j1: result.j1,
-      j2: result.j2,
-      j3: result.j3,
-      j4: result.j4,
-      j5: jointsRef.current.j5,
-    };
+    const newTargets = { j1: result.j1, j2: result.j2, j3: result.j3, j4: result.j4, j5: jointsRef.current.j5 };
     setTargets(newTargets);
 
     // เริ่มจากองศาเริ่มต้น (HOME) เสมอ ก่อนเคลื่อนไปยังเป้าหมายที่คำนวณจาก IK
     runFromHome(newTargets, motionType, () => {
-      ikTargetRef.current = { x, y, z };
+      ikTargetRef.current = { x: tx, y: ty, z: tz };
     });
   }, [moving, motionType, ikTarget, runFromHome]);
 
   // ---- ลากลูกศร XYZ ที่ปลายแขน -> ขยับตำแหน่งจริงแบบเรียลไทม์แล้วคำนวณ IK ย้อนกลับ ----
   // ทุกข้อต่อ (J1-J4) จะถูกคำนวณใหม่ให้ปลายแขนไปอยู่ที่ตำแหน่ง XYZ เป้าหมายเสมอ
+  // ใช้ numeric CCD จากตำแหน่งปลายนิ้วจริง (ไม่ใช่สูตร analytic) จาก "ท่าปัจจุบัน" ของแขน
+  // (ไม่ต้อง reset ไป HOME ก่อน) เพื่อให้ลากได้ต่อเนื่องลื่นไหลแบบเรียลไทม์
   const handleIkDrag = useCallback((axis, delta) => {
     if (moving) return;
+    const s = sceneApiRef.current;
+    if (!s || !s.ready) return;
     const cur = ikTargetRef.current;
-    // ลากลูกบอลกลาง (axis === "xyz") ส่ง delta มาเป็น {x,y,z} ขยับพร้อมกันทั้ง 3 แกน
-    // ลากลูกศรแกนเดี่ยว (axis === "x"|"y"|"z") ส่ง delta มาเป็นตัวเลขเดียว
     const next =
       axis === "xyz"
         ? {
@@ -893,21 +997,26 @@ export default function RoboticArmControl() {
             z: (parseFloat(cur.z) || 0) + delta.z,
           }
         : { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + delta };
-    const result = solveIK(next.x, next.y, next.z);
-    if (!result.ok) {
-      // นอกพิสัย — ค้างตำแหน่งเดิมไว้ (ไม่ขยับต่อในทิศทางนั้น)
+
+    const modelScale = s.modelScale || 1;
+    const targetWorld = new THREE.Vector3(
+      parseFloat(next.x) || 0,
+      parseFloat(next.y) || 0,
+      parseFloat(next.z) || 0
+    ).multiplyScalar(modelScale);
+    // ไล่ CCD จาก "ท่าปัจจุบันของโมเดลจริง" (ไม่ reset) — ต่อเนื่องทุก pointermove event
+    const result = s.numericIK(targetWorld, 8);
+    if (result.reachedDist > 0.02 * modelScale) {
+      // ไปไม่ถึงเป้าหมายจริง (นอกพิสัย/ติดขอบเขตมุม) — ไม่ขยับ ikTarget ต่อในทิศทางนั้น
+      // (ค่ามุมข้อต่อได้ถูกดันเข้าใกล้ที่สุดเท่าที่ทำได้แล้วโดย numericIK ข้างบน แต่เราจะไม่รับ
+      // ตำแหน่งเป้าหมายที่ไปไม่ถึงจริงมาเป็น ikTarget ใหม่ เพื่อไม่ให้ตัวเลขวิ่งหนีปลายแขนจริง)
+      s.setChainDegrees(jointsRef.current);
       return;
     }
     ikTargetRef.current = next;
     setIkTarget(next);
     setIkError("");
-    const newJoints = {
-      j1: result.j1,
-      j2: result.j2,
-      j3: result.j3,
-      j4: result.j4,
-      j5: jointsRef.current.j5,
-    };
+    const newJoints = { j1: result.j1, j2: result.j2, j3: result.j3, j4: result.j4, j5: jointsRef.current.j5 };
     jointsRef.current = newJoints;
     setJoints(newJoints);
     setTargets(newJoints);
@@ -931,7 +1040,8 @@ export default function RoboticArmControl() {
   }, [moving]);
 
   const viewerRef = useRef(null);
-  const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta, handleIkDrag);
+  const sceneApiRef = useRef(null);
+  const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta, handleIkDrag, sceneApiRef);
 
   // เมื่อโมเดลโหลดเสร็จและ L4 ถูกคาลิเบรตจากตำแหน่งจริงแล้ว รีเฟรชค่า IK readout/target
   // ให้ตรงกับค่าที่คาลิเบรตใหม่ (ก่อนหน้านี้ตอน mount ครั้งแรกยังใช้ค่า L4 fallback อยู่)
