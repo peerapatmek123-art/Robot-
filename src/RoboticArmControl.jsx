@@ -961,12 +961,14 @@ export default function RoboticArmControl() {
       return;
     }
 
-    // seed จาก HOME แล้วไล่ CCD จากปลายนิ้วจริงไปยังเป้าหมาย (แม่นยำกว่าสูตร analytic ล้วนๆ
-    // เพราะไม่ต้องสมมติทิศทางของ L4 — วัดจากตำแหน่งจริงของโมเดลทุกครั้ง)
+    // seed จากผลลัพธ์ analytic (ซึ่งเลือก configuration ข้อศอกที่ "เป็นธรรมชาติ" ไว้แล้ว
+    // จากการเช็ค A/B ในขอบเขตข้อต่อ) แล้วใช้ CCD แค่ไม่กี่รอบเพื่อแก้ค่าคลาดเคลื่อนเล็กน้อย
+    // จากสมมติฐานทิศทาง L4 เท่านั้น — เดิม seed จาก HOME แล้วปล่อย CCD ไล่เองอิสระ ทำให้
+    // บางครั้งข้อศอก/ไหล่ไปเจอ configuration ที่ผิดธรรมชาติ (งอย้อนกลับ/บิดผิดท่า)
     const modelScale = s.modelScale || 1;
-    s.setChainDegrees(HOME);
+    s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
     const targetWorld = new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale);
-    const result = s.numericIK(targetWorld, 30);
+    const result = s.numericIK(targetWorld, 6);
     if (result.reachedDist > 0.015 * modelScale) {
       setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
       return;
@@ -1007,13 +1009,26 @@ export default function RoboticArmControl() {
         : { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + clampStep(delta) };
 
     const modelScale = s.modelScale || 1;
+
+    // seed จากผลลัพธ์ analytic (เลือก configuration ข้อศอกที่เป็นธรรมชาติให้แล้ว) ทุกครั้งที่ลาก
+    // แทนที่จะปล่อยให้ CCD ไล่ต่อจาก "ท่าปัจจุบัน" อิสระไปเรื่อยๆ ซึ่งสะสมความเบี้ยวจนข้อศอก/ไหล่
+    // ไปอยู่ใน configuration ที่ผิดธรรมชาติได้เมื่อลากต่อเนื่องนานๆ — CCD ทำหน้าที่แค่ "แก้ค่า
+    // คลาดเคลื่อนเล็กน้อย" จากสมมติฐานทิศทาง L4 ของสูตร analytic เท่านั้น ไม่ใช่หาท่าทางเอง
+    const rough = solveIK(
+      parseFloat(next.x) || 0,
+      parseFloat(next.y) || 0,
+      parseFloat(next.z) || 0
+    );
+    if (rough.ok) {
+      s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
+    }
     const targetWorld = new THREE.Vector3(
       parseFloat(next.x) || 0,
       parseFloat(next.y) || 0,
       parseFloat(next.z) || 0
     ).multiplyScalar(modelScale);
-    // ไล่ CCD จาก "ท่าปัจจุบันของโมเดลจริง" (ไม่ reset) — ต่อเนื่องทุก pointermove event
-    const result = s.numericIK(targetWorld, 14);
+    // CCD แค่ไม่กี่รอบพอ เพราะ seed จาก analytic ใกล้คำตอบอยู่แล้ว ไม่ต้องไล่ไกล
+    const result = s.numericIK(targetWorld, rough.ok ? 5 : 14);
 
     // ซิงก์ ikTarget กับ "ตำแหน่งที่ไปถึงจริง" เสมอ (ไม่ใช่ตำแหน่งที่ลากขอไว้ดิบๆ)
     // เดิมถ้าไปไม่ถึงจะ setChainDegrees สะบัดกลับไปตำแหน่งก่อนหน้าทันที แล้วพอลากกลับเข้า
