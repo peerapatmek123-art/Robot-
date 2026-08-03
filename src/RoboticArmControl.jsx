@@ -25,7 +25,7 @@ const C = {
   track: "#1a2140",
 };
 
-const HOME = { j1: 0, j2: 0, j3: 90, j4: 45, j5: 0 };
+const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 
 // ---------------------------------------------------------------------------
 // Robot arm link lengths (เมตร — ปรับตามแขนกลจริง)
@@ -293,16 +293,6 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         renderer.domElement.style.cursor = "grabbing";
         return;
       }
-      if (spec && spec.jointAxis && onJointDeltaRef.current) {
-        // ลากวงแหวน -> โหมดขยับ joint โดยตรง (ข้อมือ/ปลายจับ)
-        handleDrag.active = true;
-        handleDrag.mode = "joint";
-        handleDrag.spec = spec;
-        handleDrag.lastX = e.clientX;
-        handleDrag.lastY = e.clientY;
-        renderer.domElement.style.cursor = "grabbing";
-        return;
-      }
       controls.dragging = true;
       controls.panMode = e.shiftKey || controls.panMode;
       controls.lastX = e.clientX;
@@ -336,17 +326,6 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
           const worldDelta = movedAlongAxisPixels * IK_METERS_PER_PIXEL;
           onIkDragRef.current?.(axis, worldDelta);
         }
-        return;
-      }
-      if (handleDrag.active && handleDrag.mode === "joint") {
-        const dx = e.clientX - handleDrag.lastX;
-        const dy = e.clientY - handleDrag.lastY;
-        handleDrag.lastX = e.clientX;
-        handleDrag.lastY = e.clientY;
-        const spec = handleDrag.spec;
-        const raw = spec.useAxis === "x" ? dx : dy;
-        const delta = raw * spec.sens;
-        onJointDeltaRef.current?.(spec.jointAxis, delta);
         return;
       }
       if (!controls.dragging) return;
@@ -452,11 +431,11 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
 
       s.endEffector = s.gripperGroup;
 
-      // ---- Gizmo ที่ปลายแขน ----
-      // 1) ลูกศรเลื่อน XYZ (world-aligned, อยู่ที่ปลายแขนเสมอ ไม่หมุนตามข้อต่อ)
-      //    ลากลูกศรแกนไหน -> ปลายแขนขยับไปทางแกนนั้นในพิกัดโลกจริง แล้วคำนวณ IK
-      //    ย้อนกลับไปหามุมของทุกข้อต่อให้ปลายแขนไปถึงตำแหน่งนั้น (แดง=X เขียว=Y น้ำเงิน=Z)
-      // 2) วงแหวนหมุนเล็ก ๆ สำหรับข้อมือ/ปลายจับ ยังคงหมุนไปกับปลายแขนเหมือนเดิม
+      // ---- Gizmo ที่ปลายมือคีบ (J5) ----
+      // ลูกศรเลื่อน XYZ เท่านั้น (world-aligned, ไม่หมุนตามข้อต่อ)
+      // อยู่ที่ "ปลายมือคีบจริง" (จุดกึ่งกลางระหว่างนิ้วซ้าย-ขวา คือตำแหน่ง J5)
+      // ลากลูกศรแกนไหน -> ปลายมือคีบขยับไปทางแกนนั้นในพิกัดโลกจริง แล้วคำนวณ IK
+      // ย้อนกลับไปหามุมของทุกข้อต่อ (J1-J4) ให้ปลายมือคีบไปถึงตำแหน่งนั้น (แดง=X เขียว=Y น้ำเงิน=Z)
       const gizmoLen = 0.2;
 
       function makeArrow(dir, color, axis) {
@@ -477,18 +456,6 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         return { grp, pickables: [shaft, head] };
       }
 
-      function makeRing(axis, color, jointAxis, useAxis, sens) {
-        const mesh = new THREE.Mesh(
-          new THREE.TorusGeometry(gizmoLen * 0.7, 0.005, 8, 48),
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthTest: false })
-        );
-        if (axis === "x") mesh.rotation.y = Math.PI / 2;
-        if (axis === "y") mesh.rotation.x = Math.PI / 2;
-        mesh.renderOrder = 998;
-        mesh.userData = { jointAxis, useAxis, sens };
-        return mesh;
-      }
-
       s.pickables = [];
 
       // ---- ลูกศรเลื่อน XYZ (world space) -> ผูกกับ IK จริง ----
@@ -504,23 +471,9 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         s.pickables.push(...pickables);
       });
       // เพิ่มเข้า scene โดยตรง (ไม่ใช่ลูกของ endEffector) เพื่อให้แกนอ้างอิงกับโลกเสมอ
-      // ไม่หมุนตามข้อต่อ — ตำแหน่งจะถูกอัปเดตให้ตรงกับปลายแขนทุกเฟรมใน tick()
+      // ไม่หมุนตามข้อต่อ — ตำแหน่งจะถูกอัปเดตให้ตรงกับ "ปลายมือคีบ (J5)" ทุกเฟรมใน tick()
       scene.add(translateGizmo);
       s.translateGizmo = translateGizmo;
-
-      // ---- วงแหวนหมุนเล็ก: ข้อมือ (J4) + ปลายจับ (J5) — ยังคงหมุนตามปลายแขน ----
-      const rotateGizmo = new THREE.Group();
-      rotateGizmo.name = "WristGripperGizmo";
-      const rings = [
-        makeRing("x", 0xf59e0b, "j4", "y", 0.5),
-        makeRing("z", 0xa855f7, "j5", "x", 0.6),
-      ];
-      rings.forEach((r) => {
-        rotateGizmo.add(r);
-        s.pickables.push(r);
-      });
-      s.endEffector.add(rotateGizmo);
-      s.rotateGizmo = rotateGizmo;
 
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
         .filter((k) => !s[k]);
