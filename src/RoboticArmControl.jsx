@@ -268,6 +268,9 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       lastY: 0,
     };
 
+    // ระยะกล้องอ้างอิง (= ค่าเริ่มต้นของ controls.radius) ใช้คำนวณสเกล gizmo ให้ขนาดบนจอคงที่
+    const GIZMO_REF_DISTANCE = controls.radius;
+
     function applyCamera() {
       const el = Math.max(-1.3, Math.min(1.3, controls.elevation));
       const x = controls.target.x + controls.radius * Math.cos(el) * Math.sin(controls.azimuth);
@@ -319,6 +322,26 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
     const _camRight = new THREE.Vector3();
     const _planeNormal = new THREE.Vector3();
     const _intersectPoint = new THREE.Vector3();
+
+    // ---- Hover feedback state (ทำให้เห็นชัดว่ากำลังจะจับแกนไหนก่อนลาก) ----
+    let hoveredKey = null; // "x" | "y" | "z" | "free" | null
+    function setHoverVisual(key) {
+      if (key === hoveredKey) return;
+      const s = sceneRef.current;
+      // คืนค่าตัวที่ hover ค้างไว้ก่อนหน้ากลับเป็นปกติ
+      if (hoveredKey && s?.gizmoParts?.[hoveredKey]) {
+        const prev = s.gizmoParts[hoveredKey];
+        prev.grp.scale.setScalar(1);
+        prev.mats.forEach((m, i) => m.color.copy(prev.baseColors[i]));
+      }
+      hoveredKey = key;
+      if (key && s?.gizmoParts?.[key]) {
+        const cur = s.gizmoParts[key];
+        cur.grp.scale.setScalar(1.35);
+        cur.mats.forEach((m) => m.color.set(0xffffff));
+      }
+      renderer.domElement.style.cursor = key ? "grab" : "grab";
+    }
 
     // แปลงพิกัดโลก -> พิกัดพิกเซลบนหน้าจอ (สำหรับคำนวณ world-units-per-pixel ของแต่ละแกน)
     function worldToScreen(vec3) {
@@ -420,7 +443,12 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         }
         return;
       }
-      if (!controls.dragging) return;
+      if (!controls.dragging) {
+        // ไม่ได้ลากอะไรอยู่ -> เช็คว่าเมาส์ชี้ตรงแกน/ลูกบอลกลางไหม เพื่อไฮไลต์ก่อนกดจับ
+        const spec = pickHandle(e);
+        setHoverVisual(spec ? (spec.axis || (spec.free ? "free" : null)) : null);
+        return;
+      }
       const dx = e.clientX - controls.lastX;
       const dy = e.clientY - controls.lastY;
       controls.lastX = e.clientX;
@@ -444,9 +472,13 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       e.preventDefault();
       controls.radius = Math.max(2, Math.min(10, controls.radius + e.deltaY * 0.0025));
     }
+    function onPointerLeave() {
+      if (!handleDrag.active) setHoverVisual(null);
+    }
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
+    renderer.domElement.addEventListener("pointerleave", onPointerLeave);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
     const _eeWorldPos = new THREE.Vector3();
@@ -462,6 +494,11 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
         s.fingerRTip.getWorldPosition(_tipR);
         _eeWorldPos.copy(_tipL).add(_tipR).multiplyScalar(0.5);
         s.translateGizmo.position.copy(_eeWorldPos);
+        // คงขนาด gizmo ให้ดู "เท่าเดิมบนจอ" ไม่ว่าจะซูมเข้า/ออกแค่ไหน
+        // (ไม่งั้นตอนซูมออกลูกศรจะเล็กจิ๋วจนลากยากมาก) — สเกลตามระยะกล้องจริง
+        const camDist = camera.position.distanceTo(_eeWorldPos);
+        const gizmoScale = camDist / GIZMO_REF_DISTANCE;
+        s.translateGizmo.scale.setScalar(gizmoScale);
       }
       renderer.render(scene, camera);
       raf = requestAnimationFrame(tick);
@@ -482,6 +519,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       modelScale: 5,
       allMeshes: [],
       pickables: [],
+      gizmoParts: null,
       translateGizmo: null,
       rotateGizmo: null,
       ready: false,
@@ -580,40 +618,85 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       // อยู่ที่ "ปลายมือคีบจริง" (จุดกึ่งกลางระหว่างนิ้วซ้าย-ขวา คือตำแหน่ง J5)
       // ลากลูกศรแกนไหน -> ปลายมือคีบขยับไปทางแกนนั้นในพิกัดโลกจริง แล้วคำนวณ IK
       // ย้อนกลับไปหามุมของทุกข้อต่อ (J1-J4) ให้ปลายมือคีบไปถึงตำแหน่งนั้น (แดง=X เขียว=Y น้ำเงิน=Z)
-      const gizmoLen = 0.2;
+      // ขนาดสเกลตาม modelScale (โมเดลถูกขยาย 5 เท่า) ไม่งั้นลูกศรจะดูจิ๋วมากเทียบกับตัวแขนกล
+      // ทำให้คลิก/ลากยากมาก — ค่านี้ยังถูกคงขนาดบนจอไว้อีกชั้นด้วย GIZMO_REF_DISTANCE ใน tick()
+      const gizmoModelScale = model.scale.x || 1;
+      const gizmoLen = 0.2 * gizmoModelScale;
+
+      // พื้นที่คลิก "โปร่งใส" ที่ใหญ่กว่ารูปที่มองเห็นจริงหลายเท่า เพื่อให้จิ้ม/ลากง่ายขึ้นมาก
+      // (เดิมต้องคลิกตรงเส้นบางๆ พอดีเป๊ะถึงจะโดน ซึ่งยากมากโดยเฉพาะตอนซูมออก)
+      const HIT_PADDING = 3.2;
 
       function makeArrow(dir, color, axis) {
         const shaftLen = gizmoLen * 0.7;
         const headLen = gizmoLen * 0.3;
+        const shaftRadius = gizmoLen * 0.03;
+        const headRadius = gizmoLen * 0.09;
         const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, shaftLen, 8), mat);
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLen, 8), mat);
         shaft.position.y = shaftLen / 2;
-        const head = new THREE.Mesh(new THREE.ConeGeometry(0.018, headLen, 10), mat);
+        const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLen, 10), mat);
         head.position.y = shaftLen + headLen / 2;
+
+        // hit-box โปร่งใสครอบทั้งแกน (หนากว่าของจริงมาก) ใช้แค่สำหรับ raycast ไม่ได้ render ให้เห็น
+        const hitMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, depthTest: false });
+        const hitBox = new THREE.Mesh(
+          new THREE.CylinderGeometry(shaftRadius * HIT_PADDING, headRadius * HIT_PADDING, gizmoLen, 10),
+          hitMat
+        );
+        hitBox.position.y = gizmoLen / 2;
+        hitBox.renderOrder = 998;
+
         const grp = new THREE.Group();
-        grp.add(shaft, head);
+        grp.add(shaft, head, hitBox);
         grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
         grp.renderOrder = 999;
         const userData = { axis };
         shaft.userData = userData;
         head.userData = userData;
-        return { grp, pickables: [shaft, head] };
+        hitBox.userData = userData;
+        return { grp, pickables: [shaft, head, hitBox], mats: [mat], baseColors: [new THREE.Color(color)] };
       }
 
       s.pickables = [];
+      s.gizmoParts = {};
 
       // ---- ลูกศรเลื่อน XYZ (world space) -> ผูกกับ IK จริง ----
       const translateGizmo = new THREE.Group();
       translateGizmo.name = "IK_TranslateGizmo";
       const arrows = [
-        makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "x"),
-        makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "y"),
-        makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "z"),
+        { key: "x", data: makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "x") },
+        { key: "y", data: makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "y") },
+        { key: "z", data: makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "z") },
       ];
-      arrows.forEach(({ grp, pickables }) => {
-        translateGizmo.add(grp);
-        s.pickables.push(...pickables);
+      arrows.forEach(({ key, data }) => {
+        translateGizmo.add(data.grp);
+        s.pickables.push(...data.pickables);
+        s.gizmoParts[key] = { grp: data.grp, mats: data.mats, baseColors: data.baseColors };
       });
+
+      // ---- ลูกบอลกลาง -> ลากอิสระ 3 แกนพร้อมกัน (ง่ายกว่าเล็งแกนเดี่ยวสำหรับผู้เริ่มต้น) ----
+      const freeRadius = gizmoLen * 0.16;
+      const freeMat = new THREE.MeshBasicMaterial({
+        color: 0xe7ebf5,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+      });
+      const freeBall = new THREE.Mesh(new THREE.SphereGeometry(freeRadius, 20, 16), freeMat);
+      freeBall.renderOrder = 999;
+      const freeHitMat = new THREE.MeshBasicMaterial({ color: 0xe7ebf5, transparent: true, opacity: 0, depthTest: false });
+      const freeHit = new THREE.Mesh(new THREE.SphereGeometry(freeRadius * 2.2, 16, 12), freeHitMat);
+      freeHit.renderOrder = 998;
+      const freeGrp = new THREE.Group();
+      freeGrp.add(freeBall, freeHit);
+      const freeUserData = { free: true };
+      freeBall.userData = freeUserData;
+      freeHit.userData = freeUserData;
+      translateGizmo.add(freeGrp);
+      s.pickables.push(freeBall, freeHit);
+      s.gizmoParts.free = { grp: freeGrp, mats: [freeMat], baseColors: [new THREE.Color(0xe7ebf5)] };
+
       // เพิ่มเข้า scene โดยตรง (ไม่ใช่ลูกของ endEffector) เพื่อให้แกนอ้างอิงกับโลกเสมอ
       // ไม่หมุนตามข้อต่อ — ตำแหน่งจะถูกอัปเดตให้ตรงกับ "ปลายมือคีบ (J5)" ทุกเฟรมใน tick()
       scene.add(translateGizmo);
@@ -646,6 +729,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
       renderer.domElement.removeEventListener("wheel", onWheel);
       renderer.dispose();
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
@@ -798,7 +882,17 @@ export default function RoboticArmControl() {
   const handleIkDrag = useCallback((axis, delta) => {
     if (moving) return;
     const cur = ikTargetRef.current;
-    const next = { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + delta };
+    // ลากลูกบอลกลาง (axis === "xyz") ส่ง delta มาเป็น {x,y,z} ขยับพร้อมกันทั้ง 3 แกน
+    // ลากลูกศรแกนเดี่ยว (axis === "x"|"y"|"z") ส่ง delta มาเป็นตัวเลขเดียว
+    const next =
+      axis === "xyz"
+        ? {
+            ...cur,
+            x: (parseFloat(cur.x) || 0) + delta.x,
+            y: (parseFloat(cur.y) || 0) + delta.y,
+            z: (parseFloat(cur.z) || 0) + delta.z,
+          }
+        : { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + delta };
     const result = solveIK(next.x, next.y, next.z);
     if (!result.ok) {
       // นอกพิสัย — ค้างตำแหน่งเดิมไว้ (ไม่ขยับต่อในทิศทางนั้น)
