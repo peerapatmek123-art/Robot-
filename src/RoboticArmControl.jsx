@@ -323,13 +323,40 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
 
     function onPointerDown(e) {
       const spec = pickHandle(e);
-      if (spec && spec.axis && onIkDragRef.current) {
-        // ลากลูกศร -> โหมด IK translate
+      const s = sceneRef.current;
+      if (spec && spec.axis && onIkDragRef.current && s && s.translateGizmo) {
+        // ลากลูกศร -> โหมด IK translate ตามแกนเดียว (คำนวณผ่าน ray-plane intersection จริง)
+        const gizmoPos = s.translateGizmo.position;
+        _dragLineDir.copy(AXIS_VECTORS[spec.axis]).normalize();
+        camera.getWorldDirection(_camForward);
+        _camRight.crossVectors(_camForward, _dragLineDir);
+        if (_camRight.lengthSq() < 1e-6) _camRight.crossVectors(_camForward, camera.up);
+        _planeNormal.crossVectors(_dragLineDir, _camRight).normalize();
+        handleDrag.plane.setFromNormalAndCoplanarPoint(_planeNormal, gizmoPos);
+        handleDrag.lineOrigin.copy(gizmoPos);
+        handleDrag.lineDir.copy(_dragLineDir);
+        const ray = pointerRay(e);
+        handleDrag.lastT = ray.intersectPlane(handleDrag.plane, _intersectPoint)
+          ? _intersectPoint.clone().sub(gizmoPos).dot(_dragLineDir)
+          : 0;
         handleDrag.active = true;
-        handleDrag.mode = "ik";
+        handleDrag.mode = "ik-axis";
         handleDrag.spec = spec;
-        handleDrag.lastX = e.clientX;
-        handleDrag.lastY = e.clientY;
+        renderer.domElement.style.cursor = "grabbing";
+        return;
+      }
+      if (spec && spec.free && onIkDragRef.current && s && s.translateGizmo) {
+        // ลากลูกบอลกลาง -> โหมด IK translate อิสระ 3 แกนพร้อมกัน (ลากปลายมือคีบไปไหนก็ได้)
+        const gizmoPos = s.translateGizmo.position;
+        camera.getWorldDirection(_camForward);
+        handleDrag.plane.setFromNormalAndCoplanarPoint(_camForward, gizmoPos);
+        const ray = pointerRay(e);
+        handleDrag.lastPoint.copy(
+          ray.intersectPlane(handleDrag.plane, _intersectPoint) ? _intersectPoint : gizmoPos
+        );
+        handleDrag.active = true;
+        handleDrag.mode = "ik-free";
+        handleDrag.spec = spec;
         renderer.domElement.style.cursor = "grabbing";
         return;
       }
@@ -340,31 +367,30 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       renderer.domElement.style.cursor = "grabbing";
     }
     function onPointerMove(e) {
-      if (handleDrag.active && handleDrag.mode === "ik") {
+      if (handleDrag.active && handleDrag.mode === "ik-axis") {
         const s = sceneRef.current;
-        const dx = e.clientX - handleDrag.lastX;
-        const dy = e.clientY - handleDrag.lastY;
-        handleDrag.lastX = e.clientX;
-        handleDrag.lastY = e.clientY;
-        if (s && s.translateGizmo) {
-          const axis = handleDrag.spec.axis;
-          const gizmoPos = s.translateGizmo.position;
-          // ใช้พิกัดฉาก (screen projection) ของแกนนั้นแค่หา "ทิศทาง" บนจอเท่านั้น
-          // (ระยะจริงในหน่วยเมตรของ IK เป็นคนละสเกลกับหน่วยฉากในโมเดล 3D ที่ถูกขยาย 5 เท่า
-          //  จึงแปลงระยะพิกเซลเป็นเมตรด้วยค่าความไวคงที่แทน ไม่ผูกกับสเกลภาพ)
-          _p0.copy(gizmoPos);
-          _p1.copy(gizmoPos).addScaledVector(AXIS_VECTORS[axis], 0.05);
-          const sp0 = worldToScreen(_p0);
-          const sp1 = worldToScreen(_p1);
-          let sdx = sp1.x - sp0.x;
-          let sdy = sp1.y - sp0.y;
-          const slen = Math.hypot(sdx, sdy) || 1e-6;
-          sdx /= slen;
-          sdy /= slen;
-          const movedAlongAxisPixels = dx * sdx + dy * sdy;
-          const IK_METERS_PER_PIXEL = 0.0006; // ปรับความไวการลากได้ตรงนี้
-          const worldDelta = movedAlongAxisPixels * IK_METERS_PER_PIXEL;
-          onIkDragRef.current?.(axis, worldDelta);
+        const modelScale = s?.modelScale || 1;
+        const ray = pointerRay(e);
+        if (ray.intersectPlane(handleDrag.plane, _intersectPoint)) {
+          const t = _intersectPoint.clone().sub(handleDrag.lineOrigin).dot(handleDrag.lineDir);
+          const deltaT = t - handleDrag.lastT;
+          handleDrag.lastT = t;
+          onIkDragRef.current?.(handleDrag.spec.axis, deltaT / modelScale);
+        }
+        return;
+      }
+      if (handleDrag.active && handleDrag.mode === "ik-free") {
+        const s = sceneRef.current;
+        const modelScale = s?.modelScale || 1;
+        const ray = pointerRay(e);
+        if (ray.intersectPlane(handleDrag.plane, _intersectPoint)) {
+          const delta = _intersectPoint.clone().sub(handleDrag.lastPoint);
+          handleDrag.lastPoint.copy(_intersectPoint);
+          onIkDragRef.current?.("xyz", {
+            x: delta.x / modelScale,
+            y: delta.y / modelScale,
+            z: delta.z / modelScale,
+          });
         }
         return;
       }
@@ -427,6 +453,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       fingerR: null,
       fingerLTip: null,
       fingerRTip: null,
+      modelScale: 5,
       allMeshes: [],
       pickables: [],
       translateGizmo: null,
