@@ -294,7 +294,18 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
     // วงแหวนหมุน (ข้อมือ/ปลายจับ) -> ยังคงขยับ joint นั้นๆ โดยตรงเหมือนเดิม
     const raycaster = new THREE.Raycaster();
     const pointerNDC = new THREE.Vector2();
-    const handleDrag = { active: false, mode: null, spec: null, lastX: 0, lastY: 0 };
+    const handleDrag = {
+      active: false,
+      mode: null,
+      spec: null,
+      lastX: 0,
+      lastY: 0,
+      plane: new THREE.Plane(),
+      lineOrigin: new THREE.Vector3(),
+      lineDir: new THREE.Vector3(),
+      lastPoint: new THREE.Vector3(),
+      lastT: 0,
+    };
     const AXIS_VECTORS = {
       x: new THREE.Vector3(1, 0, 0),
       y: new THREE.Vector3(0, 1, 0),
@@ -302,6 +313,12 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
     };
     const _p0 = new THREE.Vector3();
     const _p1 = new THREE.Vector3();
+    // scratch vectors used while dragging the IK gizmo (must not be reallocated per frame)
+    const _dragLineDir = new THREE.Vector3();
+    const _camForward = new THREE.Vector3();
+    const _camRight = new THREE.Vector3();
+    const _planeNormal = new THREE.Vector3();
+    const _intersectPoint = new THREE.Vector3();
 
     // แปลงพิกัดโลก -> พิกัดพิกเซลบนหน้าจอ (สำหรับคำนวณ world-units-per-pixel ของแต่ละแกน)
     function worldToScreen(vec3) {
