@@ -54,7 +54,7 @@ let L4 = 0.04;
  * @returns {{ ok: boolean, j1: number, j2: number, j3: number, j4: number }}
  *   มุมเป็นองศา; ok=false หากตำแหน่งอยู่นอกพิสัย (unreachable)
  */
-function solveIK(x, y, z) {
+function solveIK(x, y, z, prevJoints) {
   // J1: หมุนฐานรอบแกน Y — มองจากบน คือ atan2(x, z)
   const j1 = THREE.MathUtils.radToDeg(Math.atan2(x, z));
 
@@ -66,7 +66,12 @@ function solveIK(x, y, z) {
   // ความสูงจากไหล่ถึงข้อมือ (แนวนอน ไม่เปลี่ยนความสูงจากปลายมือคีบ)
   const dy = y - L1;
 
-  if (r <= 0) {
+  // ปฏิเสธเป้าหมายที่ใกล้แกนหมุนฐานเกินไป (r เล็กมาก) — โซนนี้เป็น near-singularity ที่
+  // เงื่อนไข "บังคับมือคีบให้อยู่แนวระดับเสมอ" ต้องพับข้อศอก/ข้อมือสุดขั้วเพื่อสนอง dy
+  // ทั้งที่ระยะแนวรัศมีแทบไม่เหลือ ทำให้ได้ท่าที่พับซ้อนกันจนดูหักงอผิดธรรมชาติ (เหมือนภาพที่ 4)
+  // ตัดขอบเขตขั้นต่ำไว้กันไม่ให้คำนวณเข้าโซนนี้เลย ถือว่านอกพิสัยแทน
+  const MIN_REACH = 0.035; // เมตร
+  if (r <= MIN_REACH) {
     return { ok: false, j1, j2: 0, j3: 0, j4: 0 };
   }
 
@@ -108,11 +113,24 @@ function solveIK(x, y, z) {
 
   // เผื่อ margin เล็กน้อย (0.01°) กันเคสอยู่ติดขอบพอดีถูกตัดทิ้งเพราะ floating point
   const inRange = (v, lo, hi) => v >= lo - 0.01 && v <= hi + 0.01;
-  const valid = candidates.find(
+  const validOnes = candidates.filter(
     (c) => inRange(c.j2, -90, 90) && inRange(c.j3, -135, 135) && inRange(c.j4, -135, 135)
   );
-  // ถ้าไม่มี configuration ไหนอยู่ในขอบเขตพอดี ใช้ตัวแรก (พฤติกรรมเดิม) แล้ว clamp ต่อไป
-  const chosen = valid || candidates[0];
+
+  let chosen;
+  if (validOnes.length === 0) {
+    // ไม่มี configuration ไหนอยู่ในขอบเขตพอดี ใช้ตัวแรก (พฤติกรรมเดิม) แล้ว clamp ต่อไป
+    chosen = candidates[0];
+  } else if (validOnes.length === 1 || !prevJoints) {
+    chosen = validOnes[0];
+  } else {
+    // มีทั้ง 2 configuration ที่ไปถึงได้ — เลือกอันที่ "ใกล้ท่าปัจจุบัน" ที่สุดในปริภูมิมุมข้อต่อ
+    // (แทนที่จะเลือกตัวแรกที่เจอแบบสุ่ม) กันไม่ให้ข้อศอก/ไหล่สลับ configuration กะทันหัน
+    // ระหว่างลาก ซึ่งเป็นสาเหตุหลักที่ทำให้ท่าทางดูกระโดด/ไม่ต่อเนื่อง/ผิดธรรมชาติ
+    const jointDist = (c) =>
+      Math.abs(c.j2 - prevJoints.j2) + Math.abs(c.j3 - prevJoints.j3) + Math.abs(c.j4 - prevJoints.j4);
+    chosen = jointDist(validOnes[0]) <= jointDist(validOnes[1]) ? validOnes[0] : validOnes[1];
+  }
 
   return {
     ok: true,
@@ -493,10 +511,18 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
         s.fingerLTip.getWorldPosition(_tipL);
         s.fingerRTip.getWorldPosition(_tipR);
         _eeWorldPos.copy(_tipL).add(_tipR).multiplyScalar(0.5);
-        s.translateGizmo.position.copy(_eeWorldPos);
+        // สำคัญ: sync ตำแหน่ง gizmo กับปลายนิ้วจริง "เฉพาะตอนไม่ได้ลากอยู่" เท่านั้น
+        // เดิม sync ทุกเฟรมไม่มีเงื่อนไข ทำให้ตอนลาก ถ้าแขนตามไม่ทันแม้แค่เฟรมเดียว (เช่น
+        // ไปเกือบสุดพิสัย/CCD ยังลู่เข้าไม่ครบ) ลูกศรจะถูกดึงกลับไปที่ตำแหน่งแขนจริงทันที
+        // ทำให้รู้สึกว่า "ลากแล้วไม่ขยับตาม" ทั้งที่จริงๆ ขยับแค่ตามไม่ทันชั่วคราว
+        // ตอนนี้ระหว่างลาก ตำแหน่ง gizmo จะถูกตั้งค่าตรงๆ จาก handleIkDrag (เท่ากับจุดที่ลาก
+        // ไปจริง 1:1 ตามเมาส์เสมอ) แล้วค่อย snap กลับไปตำแหน่งจริงตอนปล่อยเมาส์
+        if (!handleDrag.active) {
+          s.translateGizmo.position.copy(_eeWorldPos);
+        }
         // คงขนาด gizmo ให้ดู "เท่าเดิมบนจอ" ไม่ว่าจะซูมเข้า/ออกแค่ไหน
         // (ไม่งั้นตอนซูมออกลูกศรจะเล็กจิ๋วจนลากยากมาก) — สเกลตามระยะกล้องจริง
-        const camDist = camera.position.distanceTo(_eeWorldPos);
+        const camDist = camera.position.distanceTo(s.translateGizmo.position);
         const gizmoScale = camDist / GIZMO_REF_DISTANCE;
         s.translateGizmo.scale.setScalar(gizmoScale);
       }
@@ -955,7 +981,7 @@ export default function RoboticArmControl() {
     const tx = parseFloat(x) || 0, ty = parseFloat(y) || 0, tz = parseFloat(z) || 0;
 
     // เช็ค reachability แบบหยาบก่อนด้วยสูตร analytic (เร็ว, กันเคสไกลเกินพิสัยชัดเจน)
-    const rough = solveIK(tx, ty, tz);
+    const rough = solveIK(tx, ty, tz, jointsRef.current);
     if (!rough.ok) {
       setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
       return;
@@ -1017,7 +1043,8 @@ export default function RoboticArmControl() {
     const rough = solveIK(
       parseFloat(next.x) || 0,
       parseFloat(next.y) || 0,
-      parseFloat(next.z) || 0
+      parseFloat(next.z) || 0,
+      jointsRef.current
     );
     if (rough.ok) {
       s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
