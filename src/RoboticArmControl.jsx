@@ -25,7 +25,7 @@ const C = {
   track: "#1a2140",
 };
 
-const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
+const HOME = { j1: 0, j2: 0, j3: 90, j4: 45, j5: 0 };
 
 // ---------------------------------------------------------------------------
 // Robot arm link lengths (เมตร — ปรับตามแขนกลจริง)
@@ -612,6 +612,65 @@ export default function RoboticArmControl() {
   // FK readout — อัปเดตทุกครั้งที่ joint เปลี่ยน
   const fkPos = forwardKinematics(joints.j1, joints.j2, joints.j3);
 
+  // ---- ตัวช่วย animate จากมุม A ไป B (ใช้ร่วมกันทั้ง Joint move และ IK move) ----
+  // ทุกครั้งที่เล่น (step ที่สอง) จะอัปเดต jointsRef ให้ตรงกับ state เสมอ
+  // เพื่อให้ปุ่ม Move ครั้งถัดไป "รู้" ว่าแขนอยู่ตรงไหนจริง ๆ
+  const animateJoints = useCallback(({ from, to, duration, motion, onDone }) => {
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const e = motion === "LIN" ? t : easeInOutCubic(t);
+      const next = {};
+      JOINTS.forEach((j) => {
+        let val = from[j.key] + (to[j.key] - from[j.key]) * e;
+        if (motion === "CIRC" && (j.key === "j2" || j.key === "j3")) {
+          val += Math.sin(t * Math.PI) * 8 * (j.key === "j2" ? 1 : -1);
+        }
+        next[j.key] = val;
+      });
+      setJoints(next);
+      jointsRef.current = next;
+      if (t < 1) {
+        animRef.current = requestAnimationFrame(step);
+      } else {
+        setJoints(to);
+        jointsRef.current = to;
+        onDone?.();
+      }
+    }
+    animRef.current = requestAnimationFrame(step);
+  }, []);
+
+  // ---- Reset กลับตำแหน่งเริ่มต้นก่อนเสมอ แล้วค่อยเคลื่อนไปยังเป้าหมาย ----
+  // ไม่ว่าปลายมือคีบ (end-effector) จะอยู่ตำแหน่งใดก็ตามก่อนกดปุ่ม
+  // เมื่อกด Move ทุกข้อต่อจะเคลื่อนกลับไปที่ค่าองศาเริ่มต้น (HOME) ก่อน
+  // แล้วจึงคำนวณ/เคลื่อนที่ต่อไปยังตำแหน่งเป้าหมายจริง — ทำให้ทุก Move
+  // เริ่มต้นจากองศาเดิมเหมือนกันเสมอ (ตาม CiRA CORE Home + Plan & Execute)
+  const HOME_RESET_MS = 700;
+  const runFromHome = useCallback((to, motion, onFinalDone) => {
+    setMoving(true);
+    const fromNow = { ...jointsRef.current };
+    animateJoints({
+      from: fromNow,
+      to: HOME,
+      duration: HOME_RESET_MS,
+      motion: "PTP",
+      onDone: () => {
+        const duration = motion === "LIN" ? 1400 : motion === "CIRC" ? 1800 : 1100;
+        animateJoints({
+          from: HOME,
+          to,
+          duration,
+          motion,
+          onDone: () => {
+            setMoving(false);
+            onFinalDone?.();
+          },
+        });
+      },
+    });
+  }, [animateJoints]);
+
   const handleIkMove = useCallback(() => {
     if (moving) return;
     const { x, y, z } = ikTarget;
@@ -621,7 +680,7 @@ export default function RoboticArmControl() {
       return;
     }
     setIkError("");
-    // อัปเดต targets แล้วส่งต่อให้ handleMove ทำงาน
+    // อัปเดต targets แล้วส่งต่อให้ animation ทำงาน
     const newTargets = {
       j1: result.j1,
       j2: result.j2,
@@ -631,34 +690,11 @@ export default function RoboticArmControl() {
     };
     setTargets(newTargets);
 
-    // Animate ทันทีจาก joints ปัจจุบัน
-    const from = { ...jointsRef.current };
-    const to = { ...newTargets };
-    const duration = motionType === "LIN" ? 1400 : motionType === "CIRC" ? 1800 : 1100;
-    setMoving(true);
-    const start = performance.now();
-    function step(now) {
-      const t = Math.min(1, (now - start) / duration);
-      const e = easeInOutCubic(t);
-      const next = {};
-      JOINTS.forEach((j) => {
-        let val = from[j.key] + (to[j.key] - from[j.key]) * e;
-        if (motionType === "CIRC" && (j.key === "j2" || j.key === "j3")) {
-          val += Math.sin(t * Math.PI) * 8 * (j.key === "j2" ? 1 : -1);
-        }
-        next[j.key] = val;
-      });
-      setJoints(next);
-      if (t < 1) {
-        animRef.current = requestAnimationFrame(step);
-      } else {
-        setJoints(to);
-        setMoving(false);
-        ikTargetRef.current = { x, y, z };
-      }
-    }
-    animRef.current = requestAnimationFrame(step);
-  }, [moving, motionType, ikTarget]);
+    // เริ่มจากองศาเริ่มต้น (HOME) เสมอ ก่อนเคลื่อนไปยังเป้าหมายที่คำนวณจาก IK
+    runFromHome(newTargets, motionType, () => {
+      ikTargetRef.current = { x, y, z };
+    });
+  }, [moving, motionType, ikTarget, runFromHome]);
 
   // ---- ลากลูกศร XYZ ที่ปลายแขน -> ขยับตำแหน่งจริงแบบเรียลไทม์แล้วคำนวณ IK ย้อนกลับ ----
   // ทุกข้อต่อ (J1-J4) จะถูกคำนวณใหม่ให้ปลายแขนไปอยู่ที่ตำแหน่ง XYZ เป้าหมายเสมอ
@@ -713,54 +749,19 @@ export default function RoboticArmControl() {
 
   const handleMove = useCallback(() => {
     if (moving) return;
-    const from = { ...jointsRef.current };
-    const to = { ...from };
+    const to = { ...jointsRef.current };
     JOINTS.forEach((j) => {
       const v = targets[j.key];
-      to[j.key] = v === "" || v === undefined || Number.isNaN(v) ? from[j.key] : v;
+      to[j.key] = v === "" || v === undefined || Number.isNaN(v) ? jointsRef.current[j.key] : v;
     });
 
-    const duration = motionType === "LIN" ? 1400 : motionType === "CIRC" ? 1800 : 1100;
-    setMoving(true);
-    const start = performance.now();
-
-    function step(now) {
-      const t = Math.min(1, (now - start) / duration);
-      let e;
-      if (motionType === "LIN") {
-        e = t; // ความเร็วคงที่ — เส้นทางแบบ Linear
-      } else if (motionType === "CIRC") {
-        // แทรกส่วนโค้งผ่านจุดกึ่งกลาง (via point) จำลองเส้นทางแบบ Circular
-        e = easeInOutCubic(t);
-      } else {
-        e = easeInOutCubic(t); // PTP — แต่ละแกนเร่ง/ชะลอพร้อมกัน
-      }
-
-      const next = {};
-      JOINTS.forEach((j) => {
-        let val = from[j.key] + (to[j.key] - from[j.key]) * e;
-        if (motionType === "CIRC") {
-          // เพิ่ม bulge เล็กน้อยที่ J2/J3 ระหว่างทางเพื่อให้เห็นส่วนโค้งของ Circular move
-          if (j.key === "j2" || j.key === "j3") {
-            val += Math.sin(t * Math.PI) * 8 * (j.key === "j2" ? 1 : -1);
-          }
-        }
-        next[j.key] = val;
-      });
-      setJoints(next);
-
-      if (t < 1) {
-        animRef.current = requestAnimationFrame(step);
-      } else {
-        setJoints(to);
-        setMoving(false);
-        const fk = forwardKinematics(to.j1, to.j2, to.j3);
-        ikTargetRef.current = fk;
-        setIkTarget(fk);
-      }
-    }
-    animRef.current = requestAnimationFrame(step);
-  }, [moving, motionType, targets]);
+    // เริ่มจากองศาเริ่มต้น (HOME) เสมอ ก่อนเคลื่อนไปยังเป้าหมายที่กรอกไว้
+    runFromHome(to, motionType, () => {
+      const fk = forwardKinematics(to.j1, to.j2, to.j3);
+      ikTargetRef.current = fk;
+      setIkTarget(fk);
+    });
+  }, [moving, motionType, targets, runFromHome]);
 
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
