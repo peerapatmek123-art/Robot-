@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation, Home as HomeIcon } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -370,12 +370,17 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
     const _eeWorldPos = new THREE.Vector3();
+    const _tipL = new THREE.Vector3();
+    const _tipR = new THREE.Vector3();
     let raf;
     function tick() {
       applyCamera();
       const s = sceneRef.current;
-      if (s && s.ready && s.endEffector && s.translateGizmo) {
-        s.endEffector.getWorldPosition(_eeWorldPos);
+      if (s && s.ready && s.fingerLTip && s.fingerRTip && s.translateGizmo) {
+        // ตำแหน่ง J5 จริง = จุดกึ่งกลางระหว่างปลายนิ้วซ้าย-ขวา (world space) ทุกเฟรม
+        s.fingerLTip.getWorldPosition(_tipL);
+        s.fingerRTip.getWorldPosition(_tipR);
+        _eeWorldPos.copy(_tipL).add(_tipR).multiplyScalar(0.5);
         s.translateGizmo.position.copy(_eeWorldPos);
       }
       renderer.render(scene, camera);
@@ -392,6 +397,8 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       gripperGroup: null,
       fingerL: null,
       fingerR: null,
+      fingerLTip: null,
+      fingerRTip: null,
       endEffector: null,
       allMeshes: [],
       pickables: [],
@@ -441,10 +448,31 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       if (s.fingerL) s.fingerLHome = s.fingerL.position.clone();
       if (s.fingerR) s.fingerRHome = s.fingerR.position.clone();
 
-      // Create J5 end-effector pivot at gripper tip
+      // ---- จุดปลายนิ้วจริง (J5) — ไม่เดาระยะ (L4) อีกต่อไป ----
+      // หาจุด "ปลายนิ้ว" จริงจาก bounding box ของ geometry นิ้วซ้าย/ขวาแต่ละอัน
+      // (มุมที่ไกลสุดตามแกนยื่นออกของนิ้ว = ปลายนิ้ว) แล้วผูกเป็น marker
+      // ลูกของนิ้วนั้น ๆ เพื่อให้ตำแหน่งโลกอัปเดตถูกต้องตามข้อต่อ/การหุบ-กางนิ้วเสมอ
+      function attachFingerTipMarker(fingerMesh, name) {
+        if (!fingerMesh.geometry.boundingBox) fingerMesh.geometry.computeBoundingBox();
+        const bb = fingerMesh.geometry.boundingBox;
+        const tipLocal = new THREE.Vector3(
+          bb.max.x,
+          (bb.min.y + bb.max.y) / 2,
+          (bb.min.z + bb.max.z) / 2
+        );
+        const marker = new THREE.Object3D();
+        marker.name = name;
+        marker.position.copy(tipLocal);
+        fingerMesh.add(marker);
+        return marker;
+      }
+      s.fingerLTip = attachFingerTipMarker(s.fingerL, "FingerL_Tip");
+      s.fingerRTip = attachFingerTipMarker(s.fingerR, "FingerR_Tip");
+
+      // J5 end-effector = จุดกึ่งกลางจริงระหว่างปลายนิ้วซ้าย-ขวา
+      // (คำนวณสดทุกเฟรมใน tick() จากตำแหน่งโลกจริงของ fingerLTip/fingerRTip — ไม่ใช่ค่าคงที่ที่เดาไว้)
       const endEffector = new THREE.Object3D();
       endEffector.name = "J5_EndEffector";
-      endEffector.position.set(0, -L4, 0);
       s.gripperGroup.add(endEffector);
       s.endEffector = endEffector;
 
@@ -733,6 +761,26 @@ export default function RoboticArmControl() {
     });
   }, [moving, motionType, targets, runFromHome]);
 
+  // ---- ปุ่ม Home: เคลื่อนแขนกลกลับตำแหน่งเริ่มต้น (HOME) ทันที ----
+  const handleHome = useCallback(() => {
+    if (moving || !jointsRef.current) return;
+    setMoving(true);
+    const fromNow = { ...jointsRef.current };
+    animateJoints({
+      from: fromNow,
+      to: HOME,
+      duration: HOME_RESET_MS,
+      motion: "PTP",
+      onDone: () => {
+        setMoving(false);
+        setTargets(HOME);
+        const fk = forwardKinematics(HOME.j1, HOME.j2, HOME.j3);
+        ikTargetRef.current = fk;
+        setIkTarget(fk);
+      },
+    });
+  }, [moving, animateJoints]);
+
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง
@@ -798,6 +846,23 @@ export default function RoboticArmControl() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleHome}
+            disabled={moving || !modelReady}
+            title="กลับตำแหน่งเริ่มต้น (Home)"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors"
+            style={{
+              background: C.panelAlt,
+              color: moving || !modelReady ? C.subDim : C.text,
+              border: `1px solid ${C.borderSoft}`,
+              cursor: moving || !modelReady ? "default" : "pointer",
+              opacity: moving || !modelReady ? 0.6 : 1,
+            }}
+          >
+            <HomeIcon size={13} />
+            Home
+          </button>
+
           <div
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs relative"
             style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
