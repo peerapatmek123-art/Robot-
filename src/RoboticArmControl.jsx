@@ -134,12 +134,14 @@ function easeInOutCubic(t) {
 // 3D Arm Scene — โหลดโมเดล GLTF จาก Blender แล้วอ่าน Joint hierarchy
 // จากชื่อ object ที่ตั้งไว้ในไฟล์โมเดล
 // ---------------------------------------------------------------------------
-function useArmScene(containerRef, joints, wireframe, onJointDelta) {
+function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
   const sceneRef = useRef(null);
   const [modelReady, setModelReady] = useState(false);
   const [modelError, setModelError] = useState(false);
   const onJointDeltaRef = useRef(onJointDelta);
   useEffect(() => { onJointDeltaRef.current = onJointDelta; }, [onJointDelta]);
+  const onIkDragRef = useRef(onIkDrag);
+  useEffect(() => { onIkDragRef.current = onIkDrag; }, [onIkDrag]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -247,10 +249,26 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
-    // ---- Gizmo handle drag state (ลากลูกศร/วงแหวนที่ปลายแขนเพื่อขยับ joint) ----
+    // ---- Gizmo handle drag state ----
+    // ลูกศร X/Y/Z (world-aligned, อยู่ที่ปลายแขนเสมอ) -> ลากแล้วคำนวณ IK จริง
+    // วงแหวนหมุน (ข้อมือ/ปลายจับ) -> ยังคงขยับ joint นั้นๆ โดยตรงเหมือนเดิม
     const raycaster = new THREE.Raycaster();
     const pointerNDC = new THREE.Vector2();
-    const handleDrag = { active: false, spec: null, lastX: 0, lastY: 0 };
+    const handleDrag = { active: false, mode: null, spec: null, lastX: 0, lastY: 0 };
+    const AXIS_VECTORS = {
+      x: new THREE.Vector3(1, 0, 0),
+      y: new THREE.Vector3(0, 1, 0),
+      z: new THREE.Vector3(0, 0, 1),
+    };
+    const _p0 = new THREE.Vector3();
+    const _p1 = new THREE.Vector3();
+
+    // แปลงพิกัดโลก -> พิกัดพิกเซลบนหน้าจอ (สำหรับคำนวณ world-units-per-pixel ของแต่ละแกน)
+    function worldToScreen(vec3) {
+      const v = vec3.clone().project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      return { x: (v.x * 0.5 + 0.5) * rect.width, y: (-v.y * 0.5 + 0.5) * rect.height };
+    }
 
     function pickHandle(e) {
       const s = sceneRef.current;
@@ -265,8 +283,20 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
 
     function onPointerDown(e) {
       const spec = pickHandle(e);
-      if (spec && onJointDeltaRef.current) {
+      if (spec && spec.axis && onIkDragRef.current) {
+        // ลากลูกศร -> โหมด IK translate
         handleDrag.active = true;
+        handleDrag.mode = "ik";
+        handleDrag.spec = spec;
+        handleDrag.lastX = e.clientX;
+        handleDrag.lastY = e.clientY;
+        renderer.domElement.style.cursor = "grabbing";
+        return;
+      }
+      if (spec && spec.jointAxis && onJointDeltaRef.current) {
+        // ลากวงแหวน -> โหมดขยับ joint โดยตรง (ข้อมือ/ปลายจับ)
+        handleDrag.active = true;
+        handleDrag.mode = "joint";
         handleDrag.spec = spec;
         handleDrag.lastX = e.clientX;
         handleDrag.lastY = e.clientY;
@@ -280,7 +310,35 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
       renderer.domElement.style.cursor = "grabbing";
     }
     function onPointerMove(e) {
-      if (handleDrag.active) {
+      if (handleDrag.active && handleDrag.mode === "ik") {
+        const s = sceneRef.current;
+        const dx = e.clientX - handleDrag.lastX;
+        const dy = e.clientY - handleDrag.lastY;
+        handleDrag.lastX = e.clientX;
+        handleDrag.lastY = e.clientY;
+        if (s && s.translateGizmo) {
+          const axis = handleDrag.spec.axis;
+          const gizmoPos = s.translateGizmo.position;
+          // ใช้พิกัดฉาก (screen projection) ของแกนนั้นแค่หา "ทิศทาง" บนจอเท่านั้น
+          // (ระยะจริงในหน่วยเมตรของ IK เป็นคนละสเกลกับหน่วยฉากในโมเดล 3D ที่ถูกขยาย 5 เท่า
+          //  จึงแปลงระยะพิกเซลเป็นเมตรด้วยค่าความไวคงที่แทน ไม่ผูกกับสเกลภาพ)
+          _p0.copy(gizmoPos);
+          _p1.copy(gizmoPos).addScaledVector(AXIS_VECTORS[axis], 0.05);
+          const sp0 = worldToScreen(_p0);
+          const sp1 = worldToScreen(_p1);
+          let sdx = sp1.x - sp0.x;
+          let sdy = sp1.y - sp0.y;
+          const slen = Math.hypot(sdx, sdy) || 1e-6;
+          sdx /= slen;
+          sdy /= slen;
+          const movedAlongAxisPixels = dx * sdx + dy * sdy;
+          const IK_METERS_PER_PIXEL = 0.0006; // ปรับความไวการลากได้ตรงนี้
+          const worldDelta = movedAlongAxisPixels * IK_METERS_PER_PIXEL;
+          onIkDragRef.current?.(axis, worldDelta);
+        }
+        return;
+      }
+      if (handleDrag.active && handleDrag.mode === "joint") {
         const dx = e.clientX - handleDrag.lastX;
         const dy = e.clientY - handleDrag.lastY;
         handleDrag.lastX = e.clientX;
@@ -306,6 +364,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
     }
     function onPointerUp() {
       handleDrag.active = false;
+      handleDrag.mode = null;
       handleDrag.spec = null;
       controls.dragging = false;
       renderer.domElement.style.cursor = "grab";
@@ -319,9 +378,15 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
     window.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
+    const _eeWorldPos = new THREE.Vector3();
     let raf;
     function tick() {
       applyCamera();
+      const s = sceneRef.current;
+      if (s && s.ready && s.endEffector && s.translateGizmo) {
+        s.endEffector.getWorldPosition(_eeWorldPos);
+        s.translateGizmo.position.copy(_eeWorldPos);
+      }
       renderer.render(scene, camera);
       raf = requestAnimationFrame(tick);
     }
@@ -339,6 +404,8 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
       endEffector: null,
       allMeshes: [],
       pickables: [],
+      translateGizmo: null,
+      rotateGizmo: null,
       ready: false,
     };
 
@@ -385,14 +452,14 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
 
       s.endEffector = s.gripperGroup;
 
-      // ---- Gizmo ที่ปลายแขน: ลูกศรเลื่อน (translate) + วงแหวนหมุน (rotate) ----
-      // ลากลูกศร/วงแหวนแล้วแขนจะขยับ joint ที่ผูกไว้ตามไปด้วยแบบเรียลไทม์
-      // แดง = X, เขียว = Y, น้ำเงิน = Z
-      const gizmoLen = 0.2; // เล็กลงจากเดิม (เดิม 0.42)
-      const gizmoGroup = new THREE.Group();
-      gizmoGroup.name = "EndEffectorGizmo";
+      // ---- Gizmo ที่ปลายแขน ----
+      // 1) ลูกศรเลื่อน XYZ (world-aligned, อยู่ที่ปลายแขนเสมอ ไม่หมุนตามข้อต่อ)
+      //    ลากลูกศรแกนไหน -> ปลายแขนขยับไปทางแกนนั้นในพิกัดโลกจริง แล้วคำนวณ IK
+      //    ย้อนกลับไปหามุมของทุกข้อต่อให้ปลายแขนไปถึงตำแหน่งนั้น (แดง=X เขียว=Y น้ำเงิน=Z)
+      // 2) วงแหวนหมุนเล็ก ๆ สำหรับข้อมือ/ปลายจับ ยังคงหมุนไปกับปลายแขนเหมือนเดิม
+      const gizmoLen = 0.2;
 
-      function makeArrow(dir, color, jointAxis, useAxis, sens) {
+      function makeArrow(dir, color, axis) {
         const shaftLen = gizmoLen * 0.7;
         const headLen = gizmoLen * 0.3;
         const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
@@ -404,7 +471,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
         grp.add(shaft, head);
         grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
         grp.renderOrder = 999;
-        const userData = { jointAxis, useAxis, sens };
+        const userData = { axis };
         shaft.userData = userData;
         head.userData = userData;
         return { grp, pickables: [shaft, head] };
@@ -412,8 +479,8 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
 
       function makeRing(axis, color, jointAxis, useAxis, sens) {
         const mesh = new THREE.Mesh(
-          new THREE.TorusGeometry(gizmoLen * 0.95, 0.005, 8, 48),
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, depthTest: false })
+          new THREE.TorusGeometry(gizmoLen * 0.7, 0.005, 8, 48),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, depthTest: false })
         );
         if (axis === "x") mesh.rotation.y = Math.PI / 2;
         if (axis === "y") mesh.rotation.x = Math.PI / 2;
@@ -424,30 +491,36 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta) {
 
       s.pickables = [];
 
-      // ลูกศรเลื่อน: X -> J1 (ฐาน), Y -> J2 (ไหล่), Z -> J3 (ข้อศอก)
+      // ---- ลูกศรเลื่อน XYZ (world space) -> ผูกกับ IK จริง ----
+      const translateGizmo = new THREE.Group();
+      translateGizmo.name = "IK_TranslateGizmo";
       const arrows = [
-        makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "j1", "x", 0.4),
-        makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "j2", "y", -0.4),
-        makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "j3", "y", 0.4),
+        makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "x"),
+        makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "y"),
+        makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "z"),
       ];
       arrows.forEach(({ grp, pickables }) => {
-        gizmoGroup.add(grp);
+        translateGizmo.add(grp);
         s.pickables.push(...pickables);
       });
+      // เพิ่มเข้า scene โดยตรง (ไม่ใช่ลูกของ endEffector) เพื่อให้แกนอ้างอิงกับโลกเสมอ
+      // ไม่หมุนตามข้อต่อ — ตำแหน่งจะถูกอัปเดตให้ตรงกับปลายแขนทุกเฟรมใน tick()
+      scene.add(translateGizmo);
+      s.translateGizmo = translateGizmo;
 
-      // วงแหวนหมุน: รอบ X -> J4 (ข้อมือ), รอบ Y -> J1 (ฐาน), รอบ Z -> J5 (ปลายจับ)
+      // ---- วงแหวนหมุนเล็ก: ข้อมือ (J4) + ปลายจับ (J5) — ยังคงหมุนตามปลายแขน ----
+      const rotateGizmo = new THREE.Group();
+      rotateGizmo.name = "WristGripperGizmo";
       const rings = [
-        makeRing("x", 0xef4444, "j4", "y", 0.5),
-        makeRing("y", 0x22c55e, "j1", "x", 0.5),
-        makeRing("z", 0x3b6cf6, "j5", "x", 0.6),
+        makeRing("x", 0xf59e0b, "j4", "y", 0.5),
+        makeRing("z", 0xa855f7, "j5", "x", 0.6),
       ];
       rings.forEach((r) => {
-        gizmoGroup.add(r);
+        rotateGizmo.add(r);
         s.pickables.push(r);
       });
-
-      s.endEffector.add(gizmoGroup);
-      s.gizmo = gizmoGroup;
+      s.endEffector.add(rotateGizmo);
+      s.rotateGizmo = rotateGizmo;
 
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
         .filter((k) => !s[k]);
@@ -532,6 +605,7 @@ export default function RoboticArmControl() {
   // ---- Inverse Kinematics panel state ----
   const ikHome = forwardKinematics(HOME.j1, HOME.j2, HOME.j3);
   const [ikTarget, setIkTarget] = useState({ x: ikHome.x, y: ikHome.y, z: ikHome.z });
+  const ikTargetRef = useRef(ikTarget); // แหล่งข้อมูลจริงแบบ sync ใช้ตอนลากกิซโมต่อเนื่อง
   const [ikError, setIkError] = useState("");
   const [ikMode, setIkMode] = useState(false); // toggle IK / Joint input panel
 
@@ -580,10 +654,37 @@ export default function RoboticArmControl() {
       } else {
         setJoints(to);
         setMoving(false);
+        ikTargetRef.current = { x, y, z };
       }
     }
     animRef.current = requestAnimationFrame(step);
   }, [moving, motionType, ikTarget]);
+
+  // ---- ลากลูกศร XYZ ที่ปลายแขน -> ขยับตำแหน่งจริงแบบเรียลไทม์แล้วคำนวณ IK ย้อนกลับ ----
+  // ทุกข้อต่อ (J1-J4) จะถูกคำนวณใหม่ให้ปลายแขนไปอยู่ที่ตำแหน่ง XYZ เป้าหมายเสมอ
+  const handleIkDrag = useCallback((axis, delta) => {
+    if (moving) return;
+    const cur = ikTargetRef.current;
+    const next = { ...cur, [axis]: (parseFloat(cur[axis]) || 0) + delta };
+    const result = solveIK(next.x, next.y, next.z);
+    if (!result.ok) {
+      // นอกพิสัย — ค้างตำแหน่งเดิมไว้ (ไม่ขยับต่อในทิศทางนั้น)
+      return;
+    }
+    ikTargetRef.current = next;
+    setIkTarget(next);
+    setIkError("");
+    const newJoints = {
+      j1: result.j1,
+      j2: result.j2,
+      j3: result.j3,
+      j4: result.j4,
+      j5: jointsRef.current.j5,
+    };
+    jointsRef.current = newJoints;
+    setJoints(newJoints);
+    setTargets(newJoints);
+  }, [moving]);
 
   const handleJointDelta = useCallback((key, delta) => {
     if (moving) return; // อย่าให้ลากพร้อมกับตอนที่ Move กำลังเล่น animation
@@ -603,7 +704,7 @@ export default function RoboticArmControl() {
   }, [moving]);
 
   const viewerRef = useRef(null);
-  const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta);
+  const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta, handleIkDrag);
 
   const handleTargetChange = (key, min, max, raw) => {
     const v = raw === "" ? "" : Math.max(min, Math.min(max, parseFloat(raw)));
@@ -653,6 +754,9 @@ export default function RoboticArmControl() {
       } else {
         setJoints(to);
         setMoving(false);
+        const fk = forwardKinematics(to.j1, to.j2, to.j3);
+        ikTargetRef.current = fk;
+        setIkTarget(fk);
       }
     }
     animRef.current = requestAnimationFrame(step);
@@ -899,6 +1003,11 @@ export default function RoboticArmControl() {
                 <div className="text-[10px] rounded-lg px-3 py-2" style={{ background: C.accentSoft, color: C.sub }}>
                   พิสัยสูงสุด ≈ {(L2 + L3).toFixed(3)} m จากแกนหมุน J1
                   <br/>ความสูงไหล่ L1 = {L1.toFixed(3)} m
+                </div>
+
+                {/* Drag-gizmo hint */}
+                <div className="text-[10px] rounded-lg px-3 py-2" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.sub }}>
+                  🖱️ หรือลากลูกศร <span style={{ color: "#ef4444" }}>X</span>/<span style={{ color: "#22c55e" }}>Y</span>/<span style={{ color: "#3b6cf6" }}>Z</span> ที่ปลายแขนในโมเดล 3D โดยตรง — ทุกข้อต่อจะคำนวณ IK ตามแบบเรียลไทม์
                 </div>
               </div>
             ) : (
