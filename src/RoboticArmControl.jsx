@@ -34,9 +34,12 @@ const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 const L1 = 0.10; // ความสูงไหล่จากพื้น (m)
 const L2 = 0.105; // ความยาวแขนบน Upper arm (m)
 const L3 = 0.096; // ความยาวแขนล่าง Forearm (m)
+const L4 = 0.04; // ระยะจาก J4 (ข้อมือ) ถึง J5 (ปลายมือคีบจริง) — วัดจากโมเดล (m)
 
 /**
- * solveIK — คำนวณมุม Joint จากตำแหน่งปลายแขน (Analytic 2-link planar IK)
+ * solveIK — คำนวณมุม Joint จากตำแหน่งปลายมือคีบ (Analytic 2-link planar IK)
+ * ตำแหน่ง (x, y, z) ที่รับเข้ามาคือตำแหน่งของ J5 (ปลายมือคีบจริง)
+ * โดยจะหักความยาว L4 ออกก่อน แล้วจึงแก้สมการ 2-link ถึงข้อมือ (J4)
  * @param {number} x  - ระยะแกน X จากศูนย์กลางฐาน (m)
  * @param {number} y  - ความสูงจากพื้น (m)
  * @param {number} z  - ระยะแกน Z (depth) จากศูนย์กลางฐาน (m)
@@ -47,12 +50,19 @@ function solveIK(x, y, z) {
   // J1: หมุนฐานรอบแกน Y — มองจากบน คือ atan2(x, z)
   const j1 = THREE.MathUtils.radToDeg(Math.atan2(x, z));
 
-  // ระยะแนวนอนจากแกนหมุน J2 ถึงปลายแขน (projection on XZ plane)
-  const r = Math.sqrt(x * x + z * z);
-  // ความสูงจากไหล่ถึงปลายแขน
+  // ระยะแนวนอนจากแกนหมุน J2 ถึงปลายมือคีบ (J5) — projection on XZ plane
+  const rTotal = Math.sqrt(x * x + z * z);
+  // หักความยาวปลายจับ (L4) ออก เพื่อให้เหลือระยะถึงข้อมือ (J4) สำหรับสมการ 2-link
+  // (J4 คุมให้ปลายมือคีบชี้แนวนอนเสมอ ส่วนต่อขยาย L4 จึงอยู่ในแนวรัศมีเดียวกัน ไม่กระทบความสูง)
+  const r = rTotal - L4;
+  // ความสูงจากไหล่ถึงข้อมือ (แนวนอน ไม่เปลี่ยนความสูงจากปลายมือคีบ)
   const dy = y - L1;
 
-  // ระยะตรงจากไหล่ถึงปลายแขน
+  if (r <= 0) {
+    return { ok: false, j1, j2: 0, j3: 0, j4: 0 };
+  }
+
+  // ระยะตรงจากไหล่ถึงข้อมือ (J4)
   const dist = Math.sqrt(r * r + dy * dy);
 
   // ตรวจสอบ reachability
@@ -86,8 +96,8 @@ function solveIK(x, y, z) {
 }
 
 /**
- * forwardKinematics — คำนวณตำแหน่งปลายแขนจากมุม Joint (FK)
- * ใช้แสดง current end-effector position
+ * forwardKinematics — คำนวณตำแหน่งปลายมือคีบจริง (J5) จากมุม Joint (FK)
+ * ใช้แสดง current end-effector position (รวมระยะ L4 จากข้อมือ J4 ถึงปลายมือคีบ J5)
  */
 function forwardKinematics(j1deg, j2deg, j3deg) {
   const j1 = THREE.MathUtils.degToRad(j1deg);
@@ -99,14 +109,16 @@ function forwardKinematics(j1deg, j2deg, j3deg) {
   // ตำแหน่งข้อศอก (ใน plane ที่หมุนตาม J1)
   const elbowR = L2 * Math.cos(j2);
   const elbowY = shoulderY + L2 * Math.sin(j2);
-  // ตำแหน่งปลายแขน
+  // ตำแหน่งข้อมือ (J4)
   const wristR = elbowR + L3 * Math.cos(j2 - j3);
   const wristY = elbowY + L3 * Math.sin(j2 - j3);
+  // ตำแหน่งปลายมือคีบจริง (J5) — J4 คุมให้ชี้แนวนอนเสมอ จึงบวก L4 ในแนวรัศมีเดียวกัน ความสูงไม่เปลี่ยน
+  const gripR = wristR + L4;
 
   return {
-    x: parseFloat((wristR * Math.sin(j1)).toFixed(4)),
+    x: parseFloat((gripR * Math.sin(j1)).toFixed(4)),
     y: parseFloat(wristY.toFixed(4)),
-    z: parseFloat((wristR * Math.cos(j1)).toFixed(4)),
+    z: parseFloat((gripR * Math.cos(j1)).toFixed(4)),
   };
 }
 
