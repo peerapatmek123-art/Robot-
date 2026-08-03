@@ -441,7 +441,12 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       if (s.fingerL) s.fingerLHome = s.fingerL.position.clone();
       if (s.fingerR) s.fingerRHome = s.fingerR.position.clone();
 
-      s.endEffector = s.gripperGroup;
+      // Create J5 end-effector pivot at gripper tip
+      const endEffector = new THREE.Object3D();
+      endEffector.name = "J5_EndEffector";
+      endEffector.position.set(0, -L4, 0);
+      s.gripperGroup.add(endEffector);
+      s.endEffector = endEffector;
 
       // ---- Gizmo ที่ปลายมือคีบ (J5) ----
       // ลูกศรเลื่อน XYZ เท่านั้น (world-aligned, ไม่หมุนตามข้อต่อ)
