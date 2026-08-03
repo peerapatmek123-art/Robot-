@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -26,6 +26,26 @@ const C = {
 };
 
 const HOME = { j1: 0, j2: 0, j3: 0, j4: 0, j5: 0 };
+
+// J1..J5 limits — ใช้กำหนดขอบเขตของช่องกรอกตำแหน่งเป้าหมาย
+const JOINTS = [
+  { key: "j1", label: "J1", sub: "ฐาน", min: -180, max: 180, unit: "deg" },
+  { key: "j2", label: "J2", sub: "ไหล่", min: -90, max: 90, unit: "deg" },
+  { key: "j3", label: "J3", sub: "ข้อศอก", min: -135, max: 135, unit: "deg" },
+  { key: "j4", label: "J4", sub: "ข้อมือ", min: -135, max: 135, unit: "deg" },
+  { key: "j5", label: "J5", sub: "ปลายจับ", min: 0, max: 100, unit: "%" },
+];
+
+// รูปแบบการเคลื่อนที่แบบ CIRA Core / Kinematic motion module
+const MOTION_TYPES = [
+  { key: "PTP", label: "PTP", desc: "Point-to-Point" },
+  { key: "LIN", label: "LIN", desc: "Linear" },
+  { key: "CIRC", label: "CIRC", desc: "Circular" },
+];
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
 
 // ---------------------------------------------------------------------------
 // 3D Arm Scene — โหลดโมเดล GLTF จาก Blender แล้วอ่าน Joint hierarchy
@@ -241,6 +261,23 @@ function useArmScene(containerRef, joints, wireframe) {
 
       s.endEffector = s.gripperGroup;
 
+      // ---- Gizmo ลูกศรที่ปลายแขน (ปลายจับ) แสดงแกน X/Y/Z ของ tool ----
+      // แดง = X, เขียว = Y, น้ำเงิน = Z (ตามธรรมเนียม CIRA Core / kinematic tool)
+      const gizmoLen = 0.42;
+      const gizmoGroup = new THREE.Group();
+      gizmoGroup.name = "EndEffectorGizmo";
+      const axisX = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), gizmoLen, 0xef4444, gizmoLen * 0.28, gizmoLen * 0.14);
+      const axisY = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), gizmoLen, 0x22c55e, gizmoLen * 0.28, gizmoLen * 0.14);
+      const axisZ = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), gizmoLen, 0x3b6cf6, gizmoLen * 0.28, gizmoLen * 0.14);
+      [axisX, axisY, axisZ].forEach((a) => {
+        a.line.material.depthTest = false;
+        a.cone.material.depthTest = false;
+        a.renderOrder = 999;
+        gizmoGroup.add(a);
+      });
+      s.endEffector.add(gizmoGroup);
+      s.gizmo = gizmoGroup;
+
       const missing = ["baseGroup", "shoulder", "elbow", "wrist", "gripperGroup", "fingerL", "fingerR"]
         .filter((k) => !s[k]);
       if (missing.length) {
@@ -312,8 +349,72 @@ export default function RoboticArmControl() {
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
+  // ---- Kinematic motion module (CIRA Core style: PTP / LIN / CIRC) ----
+  const [joints, setJoints] = useState(HOME);
+  const [targets, setTargets] = useState(HOME);
+  const [motionType, setMotionType] = useState("PTP");
+  const [moving, setMoving] = useState(false);
+  const animRef = useRef(null);
+  const jointsRef = useRef(HOME);
+  useEffect(() => { jointsRef.current = joints; }, [joints]);
+
   const viewerRef = useRef(null);
-  const { modelReady, modelError } = useArmScene(viewerRef, HOME, false);
+  const { modelReady, modelError } = useArmScene(viewerRef, joints, false);
+
+  const handleTargetChange = (key, min, max, raw) => {
+    const v = raw === "" ? "" : Math.max(min, Math.min(max, parseFloat(raw)));
+    setTargets((t) => ({ ...t, [key]: raw === "" ? "" : v }));
+  };
+
+  const handleMove = useCallback(() => {
+    if (moving) return;
+    const from = { ...jointsRef.current };
+    const to = { ...from };
+    JOINTS.forEach((j) => {
+      const v = targets[j.key];
+      to[j.key] = v === "" || v === undefined || Number.isNaN(v) ? from[j.key] : v;
+    });
+
+    const duration = motionType === "LIN" ? 1400 : motionType === "CIRC" ? 1800 : 1100;
+    setMoving(true);
+    const start = performance.now();
+
+    function step(now) {
+      const t = Math.min(1, (now - start) / duration);
+      let e;
+      if (motionType === "LIN") {
+        e = t; // ความเร็วคงที่ — เส้นทางแบบ Linear
+      } else if (motionType === "CIRC") {
+        // แทรกส่วนโค้งผ่านจุดกึ่งกลาง (via point) จำลองเส้นทางแบบ Circular
+        e = easeInOutCubic(t);
+      } else {
+        e = easeInOutCubic(t); // PTP — แต่ละแกนเร่ง/ชะลอพร้อมกัน
+      }
+
+      const next = {};
+      JOINTS.forEach((j) => {
+        let val = from[j.key] + (to[j.key] - from[j.key]) * e;
+        if (motionType === "CIRC") {
+          // เพิ่ม bulge เล็กน้อยที่ J2/J3 ระหว่างทางเพื่อให้เห็นส่วนโค้งของ Circular move
+          if (j.key === "j2" || j.key === "j3") {
+            val += Math.sin(t * Math.PI) * 8 * (j.key === "j2" ? 1 : -1);
+          }
+        }
+        next[j.key] = val;
+      });
+      setJoints(next);
+
+      if (t < 1) {
+        animRef.current = requestAnimationFrame(step);
+      } else {
+        setJoints(to);
+        setMoving(false);
+      }
+    }
+    animRef.current = requestAnimationFrame(step);
+  }, [moving, motionType, targets]);
+
+  useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง
   const refreshPorts = useCallback(async () => {
@@ -439,6 +540,81 @@ export default function RoboticArmControl() {
               โหลดโมเดล 3D ไม่สำเร็จ
             </div>
           )}
+
+          {/* ---------------- Kinematic Move panel (PTP / LIN / CIRC) ---------------- */}
+          <div
+            className="absolute top-4 right-4 w-64 rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "rgba(16,21,42,0.92)", border: `1px solid ${C.border}`, backdropFilter: "blur(6px)" }}
+          >
+            <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+              <Navigation size={14} color={C.accent} />
+              <span className="text-xs font-semibold" style={{ color: C.text }}>Kinematic Move</span>
+            </div>
+
+            {/* Motion type selector */}
+            <div className="px-4 pt-3">
+              <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: C.subDim }}>Motion Type</div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {MOTION_TYPES.map((m) => {
+                  const active = motionType === m.key;
+                  return (
+                    <button
+                      key={m.key}
+                      onClick={() => setMotionType(m.key)}
+                      title={m.desc}
+                      className="rounded-lg py-1.5 text-[11px] font-semibold transition-colors"
+                      style={{
+                        background: active ? C.accent : C.panelAlt,
+                        color: active ? "#fff" : C.sub,
+                        border: `1px solid ${active ? C.accent : C.borderSoft}`,
+                      }}
+                    >
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Target joint inputs */}
+            <div className="px-4 pt-3.5 flex flex-col gap-2">
+              {JOINTS.map((j) => (
+                <div key={j.key} className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] w-16 shrink-0" style={{ color: C.sub }}>
+                    {j.label} <span style={{ color: C.subDim }}>({j.unit === "%" ? "%" : "°"})</span>
+                  </span>
+                  <input
+                    type="number"
+                    value={targets[j.key]}
+                    min={j.min}
+                    max={j.max}
+                    onChange={(e) => handleTargetChange(j.key, j.min, j.max, e.target.value)}
+                    disabled={moving}
+                    className="flex-1 min-w-0 rounded-lg px-2 py-1 text-[12px] font-mono text-right outline-none"
+                    style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text, opacity: moving ? 0.5 : 1 }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Move button */}
+            <div className="px-4 py-3.5">
+              <button
+                onClick={handleMove}
+                disabled={moving || !modelReady}
+                className="w-full flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold transition-colors"
+                style={{
+                  background: moving ? C.panelAlt : C.accent,
+                  color: moving ? C.sub : "#fff",
+                  border: `1px solid ${moving ? C.borderSoft : C.accent}`,
+                  cursor: moving || !modelReady ? "default" : "pointer",
+                }}
+              >
+                <MoveIcon size={14} />
+                {moving ? `กำลังเคลื่อนที่ (${motionType})...` : `Move (${motionType})`}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
