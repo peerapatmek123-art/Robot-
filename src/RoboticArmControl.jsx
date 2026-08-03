@@ -655,7 +655,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       // ไม่ว่ารูปทรง/ทิศทางของมือคีบจะเป็นอย่างไรก็ตาม ไม่ต้องพึ่งสมมติฐานเรื่องทิศทาง L4 เลย
       const ikChain = [
         { obj: s.baseGroup, axis: "y", limMin: -180, limMax: 180 },
-        { obj: s.shoulder, axis: "x", limMin: -90, limMax: 90 },
+        { obj: s.shoulder, axis: "x", limMin: -90, limMax: 90, negate: true },
         { obj: s.elbow, axis: "y", limMin: -135, limMax: 135 },
         { obj: s.wrist, axis: "y", limMin: -135, limMax: 135 },
       ];
@@ -704,8 +704,11 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
             const limRad = THREE.MathUtils.degToRad;
             const rot = joint.rotation;
             const cur = link.axis === "x" ? rot.x : rot.y;
+            // negate: rotation ของ joint นี้ถูก apply เป็น -jValue เสมอ (เช่น shoulder ใช้ d(-j2))
+            // ดังนั้น limMin/limMax ที่อ้างอิงค่า j (บวกคือยกขึ้น) ต้องกลับทิศก่อน clamp rotation จริง
+            const sign = link.negate ? -1 : 1;
             let next = cur + angle;
-            next = Math.max(limRad(link.limMin), Math.min(limRad(link.limMax), next));
+            next = Math.max(limRad(link.limMin) * sign, Math.min(limRad(link.limMax) * sign, next));
             if (link.axis === "x") rot.x = next; else rot.y = next;
             joint.updateMatrixWorld(true);
           }
