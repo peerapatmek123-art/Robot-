@@ -34,12 +34,20 @@ const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 const L1 = 0.10; // ความสูงไหล่จากพื้น (m)
 const L2 = 0.105; // ความยาวแขนบน Upper arm (m)
 const L3 = 0.096; // ความยาวแขนล่าง Forearm (m)
-const L4 = 0.04; // ระยะจาก J4 (ข้อมือ) ถึง J5 (ปลายมือคีบจริง) — วัดจากโมเดล (m)
+// L4 = ระยะจาก J4 (ข้อมือ) ถึง J5 (ปลายมือคีบจริง)
+// ค่าเริ่มต้นนี้เป็นแค่ fallback ก่อนโมเดลโหลดเสร็จ — หลังโหลดเสร็จ useArmScene
+// จะ "คาลิเบรต" ค่านี้ใหม่จากตำแหน่งจริงของ Left_Fringer/Right_Finger ในโมเดล (ไม่เดาอีกต่อไป)
+let L4 = 0.04;
 
 /**
  * solveIK — คำนวณมุม Joint จากตำแหน่งปลายมือคีบ (Analytic 2-link planar IK)
  * ตำแหน่ง (x, y, z) ที่รับเข้ามาคือตำแหน่งของ J5 (ปลายมือคีบจริง)
  * โดยจะหักความยาว L4 ออกก่อน แล้วจึงแก้สมการ 2-link ถึงข้อมือ (J4)
+ *
+ * ข้อศอก (J3) มี 2 configuration ที่ไปถึงตำแหน่งเดียวกันได้ (งอ "บวก" หรือ "ลบ")
+ * โดยเฉพาะจุดต่ำใกล้ฐาน มักไปถึงได้จริงแค่ configuration เดียวภายใต้ขอบเขตมุมของข้อต่อ
+ * ฟังก์ชันนี้จึงคำนวณทั้งสองแบบแล้วเลือกแบบที่อยู่ในขอบเขตจริงของ J2/J3/J4
+ * (เดิมใช้แบบเดียวแล้ว clamp ทิ้ง ทำให้บางจุดที่ไปถึงได้จริงถูกปัดเป็นตำแหน่งผิดเงียบ ๆ)
  * @param {number} x  - ระยะแกน X จากศูนย์กลางฐาน (m)
  * @param {number} y  - ความสูงจากพื้น (m)
  * @param {number} z  - ระยะแกน Z (depth) จากศูนย์กลางฐาน (m)
@@ -73,25 +81,45 @@ function solveIK(x, y, z) {
     return { ok: false, j1, j2: 0, j3: 0, j4: 0 };
   }
 
-  // กฎ cosine สำหรับข้อศอก (J3)
+  // กฎ cosine สำหรับข้อศอก (J3) — j3Mag คือขนาดมุมงอ (เสมอค่าบวก, [0, π])
   const cosJ3 = (dist * dist - L2 * L2 - L3 * L3) / (2 * L2 * L3);
-  const j3Rad = Math.acos(THREE.MathUtils.clamp(cosJ3, -1, 1));
+  const j3Mag = Math.acos(THREE.MathUtils.clamp(cosJ3, -1, 1));
 
-  // J2: มุมไหล่ — alpha (ยกแขน) + beta (มุมภายใน triangle)
+  // alpha: มุมยกแขนจาก J2 ไปยัง J4 ตามแนวเป้าหมาย, betaMag: มุมภายใน triangle
   const alpha = Math.atan2(dy, r);
-  const sinBeta = (L3 * Math.sin(j3Rad)) / dist;
-  const beta = Math.asin(THREE.MathUtils.clamp(sinBeta, -1, 1));
-  const j2Rad = alpha + beta;
+  const sinBetaMag = THREE.MathUtils.clamp((L3 * Math.sin(j3Mag)) / dist, -1, 1);
+  const betaMag = Math.asin(sinBetaMag);
 
-  // J4: ทำให้ปลายแขนชี้แนวนอน (wrist compensation)
-  const j4Rad = -(j2Rad - j3Rad);
+  // ---- Configuration A: ศอกงอ "บวก" (ตามสูตรเดิม) ----
+  const j3RadA = j3Mag;
+  const j2RadA = alpha + betaMag;
+  const j4RadA = -(j2RadA - j3RadA);
+
+  // ---- Configuration B: ศอกงอ "ลบ" (มิเรอร์ — ช่วยให้ไปถึงจุดต่ำ/ใกล้ฐานที่ A ไปไม่ถึง) ----
+  const j3RadB = -j3Mag;
+  const j2RadB = alpha - betaMag;
+  const j4RadB = -(j2RadB - j3RadB);
+
+  const toDeg = (rad) => THREE.MathUtils.radToDeg(rad);
+  const candidates = [
+    { j2: toDeg(j2RadA), j3: toDeg(j3RadA), j4: toDeg(j4RadA) },
+    { j2: toDeg(j2RadB), j3: toDeg(j3RadB), j4: toDeg(j4RadB) },
+  ];
+
+  // เผื่อ margin เล็กน้อย (0.01°) กันเคสอยู่ติดขอบพอดีถูกตัดทิ้งเพราะ floating point
+  const inRange = (v, lo, hi) => v >= lo - 0.01 && v <= hi + 0.01;
+  const valid = candidates.find(
+    (c) => inRange(c.j2, -90, 90) && inRange(c.j3, -135, 135) && inRange(c.j4, -135, 135)
+  );
+  // ถ้าไม่มี configuration ไหนอยู่ในขอบเขตพอดี ใช้ตัวแรก (พฤติกรรมเดิม) แล้ว clamp ต่อไป
+  const chosen = valid || candidates[0];
 
   return {
     ok: true,
     j1: THREE.MathUtils.clamp(j1, -180, 180),
-    j2: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j2Rad), -90, 90),
-    j3: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j3Rad), -135, 135),
-    j4: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(j4Rad), -135, 135),
+    j2: THREE.MathUtils.clamp(chosen.j2, -90, 90),
+    j3: THREE.MathUtils.clamp(chosen.j3, -135, 135),
+    j4: THREE.MathUtils.clamp(chosen.j4, -135, 135),
   };
 }
 
@@ -399,7 +427,6 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       fingerR: null,
       fingerLTip: null,
       fingerRTip: null,
-      endEffector: null,
       allMeshes: [],
       pickables: [],
       translateGizmo: null,
@@ -469,12 +496,31 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag) {
       s.fingerLTip = attachFingerTipMarker(s.fingerL, "FingerL_Tip");
       s.fingerRTip = attachFingerTipMarker(s.fingerR, "FingerR_Tip");
 
-      // J5 end-effector = จุดกึ่งกลางจริงระหว่างปลายนิ้วซ้าย-ขวา
-      // (คำนวณสดทุกเฟรมใน tick() จากตำแหน่งโลกจริงของ fingerLTip/fingerRTip — ไม่ใช่ค่าคงที่ที่เดาไว้)
-      const endEffector = new THREE.Object3D();
-      endEffector.name = "J5_EndEffector";
-      s.gripperGroup.add(endEffector);
-      s.endEffector = endEffector;
+      // ---- คาลิเบรต L4 จากโมเดลจริง (ไม่เดาอีกต่อไป) ----
+      // บังคับข้อต่อเข้าสู่ pose HOME ก่อน (มือคีบอยู่ในแนวระดับตามสมมติฐานของสมการ IK ที่ J4
+      // ชดเชยให้มือคีบชี้แนวนอนเสมอ) แล้ววัดระยะจริงจากจุดหมุนข้อมือ (J4) ถึงจุดกึ่งกลางปลายนิ้ว
+      // จริง หารด้วย scale ของโมเดล (5x) เพื่อแปลงกลับเป็นหน่วยเมตรแบบเดียวกับ L1/L2/L3
+      // — ความคลาดเคลื่อนของค่าคงที่นี้คือสาเหตุหลักที่ลากแกนหนึ่งแล้วปลายมือคีบเบี้ยวไปแกนอื่นด้วย
+      {
+        const d = THREE.MathUtils.degToRad;
+        s.baseGroup.rotation.y = d(HOME.j1);
+        s.shoulder.rotation.x = d(-HOME.j2);
+        s.elbow.rotation.y = d(-HOME.j3);
+        s.wrist.rotation.y = d(-HOME.j4);
+        s.baseGroup.updateMatrixWorld(true);
+
+        const wristWorld = new THREE.Vector3();
+        const tipLWorld = new THREE.Vector3();
+        const tipRWorld = new THREE.Vector3();
+        s.wrist.getWorldPosition(wristWorld);
+        s.fingerLTip.getWorldPosition(tipLWorld);
+        s.fingerRTip.getWorldPosition(tipRWorld);
+        const tipMidWorld = tipLWorld.add(tipRWorld).multiplyScalar(0.5);
+
+        const modelScale = model.scale.x || 1;
+        const measuredL4 = wristWorld.distanceTo(tipMidWorld) / modelScale;
+        if (measuredL4 > 0) L4 = measuredL4;
+      }
 
       // ---- Gizmo ที่ปลายมือคีบ (J5) ----
       // ลูกศรเลื่อน XYZ เท่านั้น (world-aligned, ไม่หมุนตามข้อต่อ)
@@ -739,6 +785,15 @@ export default function RoboticArmControl() {
 
   const viewerRef = useRef(null);
   const { modelReady, modelError } = useArmScene(viewerRef, joints, false, handleJointDelta, handleIkDrag);
+
+  // เมื่อโมเดลโหลดเสร็จและ L4 ถูกคาลิเบรตจากตำแหน่งจริงแล้ว รีเฟรชค่า IK readout/target
+  // ให้ตรงกับค่าที่คาลิเบรตใหม่ (ก่อนหน้านี้ตอน mount ครั้งแรกยังใช้ค่า L4 fallback อยู่)
+  useEffect(() => {
+    if (!modelReady) return;
+    const fk = forwardKinematics(jointsRef.current.j1, jointsRef.current.j2, jointsRef.current.j3);
+    ikTargetRef.current = fk;
+    setIkTarget(fk);
+  }, [modelReady]);
 
   const handleTargetChange = (key, min, max, raw) => {
     const v = raw === "" ? "" : Math.max(min, Math.min(max, parseFloat(raw)));
