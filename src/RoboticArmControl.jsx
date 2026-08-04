@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Home as HomeIcon } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Home as HomeIcon, Move } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -451,6 +451,63 @@ export default function RoboticArmControl() {
   const jointsRef = useRef(HOME);
   useEffect(() => { jointsRef.current = joints; }, [joints]);
 
+  // ---- แผงควบคุม "Kinematic Move" ----
+  const [motionType, setMotionType] = useState("PTP"); // "PTP" | "LIN" | "CIRC"
+  const [jointInputs, setJointInputs] = useState({
+    j1: String(HOME.j1),
+    j2: String(HOME.j2),
+    j3: String(HOME.j3),
+    j4: String(HOME.j4),
+    j5: String(HOME.j5),
+  });
+
+  // sync ช่องกรอกให้ตรงกับตำแหน่งจริงเสมอ เมื่อ joints เปลี่ยนจากแหล่งอื่น (ลาก IK / ปุ่ม Home)
+  useEffect(() => {
+    setJointInputs({
+      j1: String(joints.j1.toFixed ? joints.j1.toFixed(2) : joints.j1),
+      j2: String(joints.j2.toFixed ? joints.j2.toFixed(2) : joints.j2),
+      j3: String(joints.j3.toFixed ? joints.j3.toFixed(2) : joints.j3),
+      j4: String(joints.j4.toFixed ? joints.j4.toFixed(2) : joints.j4),
+      j5: String(joints.j5.toFixed ? joints.j5.toFixed(2) : joints.j5),
+    });
+  }, [joints]);
+
+  const handleJointInputChange = useCallback((key, value) => {
+    // อนุญาตให้พิมพ์ค่าติดลบ/จุดทศนิยม/ช่องว่างระหว่างพิมพ์ได้อย่างอิสระ
+    if (value === "" || value === "-" || /^-?\d*\.?\d*$/.test(value)) {
+      setJointInputs((prev) => ({ ...prev, [key]: value }));
+    }
+  }, []);
+
+  const handleMovePTP = useCallback(() => {
+    const parsed = {
+      j1: parseFloat(jointInputs.j1),
+      j2: parseFloat(jointInputs.j2),
+      j3: parseFloat(jointInputs.j3),
+      j4: parseFloat(jointInputs.j4),
+      j5: parseFloat(jointInputs.j5),
+    };
+    const newJoints = {
+      j1: Number.isFinite(parsed.j1) ? parsed.j1 : jointsRef.current.j1,
+      j2: Number.isFinite(parsed.j2) ? parsed.j2 : jointsRef.current.j2,
+      j3: Number.isFinite(parsed.j3) ? parsed.j3 : jointsRef.current.j3,
+      j4: Number.isFinite(parsed.j4) ? parsed.j4 : jointsRef.current.j4,
+      j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
+    };
+    jointsRef.current = newJoints;
+    setJoints(newJoints);
+
+    // sync ตำแหน่งเป้าหมายของ IK ให้ตรงกับข้อต่อใหม่ กันค่าวิ่งหนีตอนสลับไปลากลูกศรต่อ
+    const d2 = newJoints.j2 * Math.PI / 180, d3 = newJoints.j3 * Math.PI / 180;
+    const j1rad = newJoints.j1 * Math.PI / 180;
+    const rHoriz = L2 * Math.cos(d2) + L3 * Math.cos(d2 - d3);
+    wristTargetRef.current = {
+      x: rHoriz * Math.sin(j1rad),
+      y: L1 + L2 * Math.sin(d2) + L3 * Math.sin(d2 - d3),
+      z: rHoriz * Math.cos(j1rad),
+    };
+  }, [jointInputs]);
+
   // ตำแหน่งเป้าหมาย (ข้อมือ) ที่ลูกศรลากอยู่ — sync กับตำแหน่งจริงเสมอ กันค่าวิ่งหนี
   const wristTargetRef = useRef({ x: 0, y: L1 + L2 * Math.sin(0) + L3 * Math.sin(-90 * Math.PI / 180), z: L2 + L3 * Math.cos(-90 * Math.PI / 180) });
 
@@ -583,9 +640,9 @@ export default function RoboticArmControl() {
         </div>
       </div>
 
-      {/* ---------------- 3D Robot Arm Viewer ---------------- */}
-      <div className="flex-1 min-h-0 p-4">
-        <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      {/* ---------------- 3D Robot Arm Viewer + Control Panel ---------------- */}
+      <div className="flex-1 min-h-0 p-4 flex gap-4">
+        <div className="flex-1 min-w-0 rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div ref={viewerRef} className="w-full h-full" />
           {!modelReady && !modelError && (
             <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
@@ -597,6 +654,79 @@ export default function RoboticArmControl() {
               โหลดโมเดล 3D ไม่สำเร็จ
             </div>
           )}
+        </div>
+
+        {/* ---------------- Kinematic Move Panel ---------------- */}
+        <div
+          className="w-[300px] shrink-0 rounded-2xl p-4 flex flex-col gap-4"
+          style={{ background: C.panel, border: `1px solid ${C.border}` }}
+        >
+          {/* Header: title */}
+          <div className="flex items-center gap-2">
+            <Move size={15} color={C.accent} />
+            <span className="text-[13px] font-semibold" style={{ color: C.text }}>Kinematic Move</span>
+          </div>
+
+          {/* Motion type */}
+          <div>
+            <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
+              MOTION TYPE
+            </div>
+            <div className="flex gap-1.5">
+              {["PTP", "LIN", "CIRC"].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setMotionType(t)}
+                  className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                  style={{
+                    background: motionType === t ? C.accent : C.panelAlt,
+                    color: motionType === t ? "#fff" : C.sub,
+                    border: `1px solid ${motionType === t ? C.accent : C.borderSoft}`,
+                  }}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Joint value inputs */}
+          <div className="flex flex-col gap-2">
+            {["j1", "j2", "j3", "j4", "j5"].map((key, i) => (
+              <div key={key} className="flex items-center justify-between gap-2">
+                <span className="text-xs shrink-0" style={{ color: C.sub }}>
+                  {`J${i + 1} (${key === "j5" ? "%" : "°"})`}
+                </span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={jointInputs[key]}
+                  onChange={(e) => handleJointInputChange(key, e.target.value)}
+                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs text-right outline-none"
+                  style={{
+                    background: C.panelAlt,
+                    border: `1px solid ${C.borderSoft}`,
+                    color: C.text,
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+
+          {/* Move button */}
+          <button
+            onClick={handleMovePTP}
+            disabled={!modelReady}
+            className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
+            style={{
+              background: !modelReady ? C.panelAlt : C.accent,
+              color: !modelReady ? C.subDim : "#fff",
+              cursor: !modelReady ? "default" : "pointer",
+            }}
+          >
+            <Move size={14} />
+            {`Move (${motionType})`}
+          </button>
         </div>
       </div>
     </div>
