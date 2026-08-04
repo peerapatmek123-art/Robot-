@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Home as HomeIcon, Move, Save, Trash2, Play, Activity, GitBranch, Minus, Circle, Plus, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Home as HomeIcon, Move, Save, Trash2, Play, Activity, RotateCcw } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -67,7 +67,7 @@ function solveIK3(x, y, z) {
 // ---------------------------------------------------------------------------
 // 3D Arm Scene — โหลดโมเดล GLTF, กล้อง orbit, ลูกศรลาก XYZ ที่ข้อมือ
 // ---------------------------------------------------------------------------
-function useArmScene(containerRef, joints, onIkDrag) {
+function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
   const sceneRef = useRef(null);
   const [modelReady, setModelReady] = useState(false);
   const [modelError, setModelError] = useState(false);
@@ -283,8 +283,6 @@ function useArmScene(containerRef, joints, onIkDrag) {
       if (s && s.ready && s.wrist && s.gizmo) {
         if (!handleDrag.active) {
           if (s.fingerL && s.fingerR) {
-            // ใช้จุดกึ่งกลางกล่องขอบเขต (bounding box) ของนิ้วแต่ละข้าง แทน pivot origin
-            // เพื่อให้ gizmo ไปอยู่ตรงกลางระหว่าง "ปลายมือคีบ" จริงๆ ที่มองเห็น
             _fingerLBox.setFromObject(s.fingerL);
             _fingerRBox.setFromObject(s.fingerR);
             _fingerLBox.getCenter(_fingerLWorld);
@@ -294,11 +292,26 @@ function useArmScene(containerRef, joints, onIkDrag) {
             s.wrist.getWorldPosition(_wristWorld);
           }
           s.gizmo.position.copy(_wristWorld);
+
+          // ---- Trail sampling ----
+          if (trailState.recording) {
+            if (!lastTrailPos || _wristWorld.distanceTo(lastTrailPos) >= MIN_DIST) {
+              addTrailPoint(_wristWorld, trailState.motionType);
+              lastTrailPos = _wristWorld.clone();
+            }
+          }
+
+          // อัปเดต current position dot ใน minimap
+          curDot.position.set(_wristWorld.x, 0.001, _wristWorld.z);
         }
         const camDist = camera.position.distanceTo(s.gizmo.position);
         s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
       }
       renderer.render(scene, camera);
+
+      // ---- Render minimap ----
+      miniRenderer.render(miniScene, miniCamera);
+
       raf = requestAnimationFrame(tick);
     }
     tick();
@@ -314,6 +327,173 @@ function useArmScene(containerRef, joints, onIkDrag) {
       modelScale: 1,
       ready: false,
     };
+
+    // ---- Trail system — วาดเส้น 3D ตามการเคลื่อนที่ปลายมือ ----
+    const MAX_TRAIL_POINTS = 4000;
+    const trailPositions = new Float32Array(MAX_TRAIL_POINTS * 3);
+    const trailColors = new Float32Array(MAX_TRAIL_POINTS * 3);
+    let trailCount = 0;
+    let trailRecording = false;
+    let lastTrailPos = null;
+    const MIN_DIST = 0.004; // ระยะขั้นต่ำระหว่างจุด (เมตร)
+
+    // สร้าง geometry แบบ dynamic draw
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
+    trailGeo.setAttribute("color", new THREE.BufferAttribute(trailColors, 3));
+    trailGeo.setDrawRange(0, 0);
+    const trailMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      linewidth: 2,
+      depthTest: true,
+      transparent: true,
+      opacity: 0.92,
+    });
+    const trailLine = new THREE.Line(trailGeo, trailMat);
+    trailLine.frustumCulled = false;
+    trailLine.renderOrder = 10;
+    scene.add(trailLine);
+
+    // ---- จุดวาย (waypoint dots) — sphere เล็กๆ แต่ละ segment ----
+    const waypointDots = [];
+
+    function addTrailPoint(pos, motionType) {
+      if (trailCount >= MAX_TRAIL_POINTS) return;
+      const i = trailCount * 3;
+      trailPositions[i]     = pos.x;
+      trailPositions[i + 1] = pos.y;
+      trailPositions[i + 2] = pos.z;
+
+      // สีตาม motion type
+      const col = motionType === "LIN"
+        ? new THREE.Color(0x22c55e)
+        : motionType === "CIRC"
+        ? new THREE.Color(0xf59e0b)
+        : new THREE.Color(0x3b6cf6); // PTP default
+      trailColors[i]     = col.r;
+      trailColors[i + 1] = col.g;
+      trailColors[i + 2] = col.b;
+
+      trailCount++;
+      trailGeo.attributes.position.needsUpdate = true;
+      trailGeo.attributes.color.needsUpdate = true;
+      trailGeo.setDrawRange(0, trailCount);
+    }
+
+    function clearTrail() {
+      trailCount = 0;
+      lastTrailPos = null;
+      trailGeo.setDrawRange(0, 0);
+      trailGeo.attributes.position.needsUpdate = true;
+      // ลบ waypoint dots
+      waypointDots.forEach((d) => scene.remove(d));
+      waypointDots.length = 0;
+    }
+
+    function addWaypointDot(pos, motionType) {
+      const col = motionType === "LIN" ? 0x22c55e : motionType === "CIRC" ? 0xf59e0b : 0x3b6cf6;
+      const geo = new THREE.SphereGeometry(0.012, 8, 6);
+      const mat = new THREE.MeshBasicMaterial({ color: col, depthTest: true, transparent: true, opacity: 0.9 });
+      const dot = new THREE.Mesh(geo, mat);
+      dot.position.copy(pos);
+      dot.renderOrder = 11;
+      scene.add(dot);
+      waypointDots.push(dot);
+    }
+
+    // expose ผ่าน ref ที่ส่งมาจากภายนอก
+    if (trailControlRef) {
+      trailControlRef.current = {
+        start: (motionType) => {
+          trailRecording = true;
+          // เพิ่มจุดเริ่มต้นแยก segment ถ้ามี trail อยู่แล้ว
+          if (trailCount > 0 && lastTrailPos) {
+            addWaypointDot(lastTrailPos, motionType);
+          }
+        },
+        stop: () => {
+          trailRecording = false;
+          if (lastTrailPos) addWaypointDot(lastTrailPos, "PTP");
+        },
+        clear: clearTrail,
+        getCount: () => trailCount,
+        setMotionType: (mt) => { if (trailControlRef.current) trailControlRef.current._motionType = mt; },
+        _motionType: "PTP",
+      };
+    }
+
+    // ---- Minimap — renderer ขนาดเล็ก top-view มุมบนซ้าย ----
+    const MINI_SIZE = 180;
+    const miniRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    miniRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    miniRenderer.setSize(MINI_SIZE, MINI_SIZE);
+    miniRenderer.domElement.style.cssText = `
+      position:absolute; top:16px; left:16px;
+      width:${MINI_SIZE}px; height:${MINI_SIZE}px;
+      border-radius:14px;
+      border:1px solid rgba(28,35,64,0.9);
+      background:rgba(10,14,26,0.82);
+      backdrop-filter:blur(8px);
+      pointer-events:none;
+      z-index:20;
+      box-shadow:0 4px 20px rgba(0,0,0,0.5);
+    `;
+    container.appendChild(miniRenderer.domElement);
+
+    const miniCamera = new THREE.OrthographicCamera(-0.35, 0.35, 0.35, -0.35, 0.01, 20);
+    miniCamera.position.set(0, 8, 0);
+    miniCamera.lookAt(0, 0, 0);
+
+    // Mini-scene แสดงเฉพาะ grid + trail (ไม่โหลดโมเดลซ้ำ)
+    const miniScene = new THREE.Scene();
+    const miniGrid = new THREE.GridHelper(0.7, 14, 0x2c3766, 0x1c2340);
+    miniGrid.material.opacity = 0.7;
+    miniGrid.material.transparent = true;
+    miniScene.add(miniGrid);
+    miniScene.add(new THREE.AxesHelper(0.12));
+
+    // Trail line copy ใน mini scene — share geometry เดียวกัน
+    const miniTrailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+    }));
+    miniTrailLine.frustumCulled = false;
+    miniScene.add(miniTrailLine);
+
+    // Current position dot ใน minimap
+    const curDotGeo = new THREE.CircleGeometry(0.012, 10);
+    const curDotMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
+    const curDot = new THREE.Mesh(curDotGeo, curDotMat);
+    curDot.rotation.x = -Math.PI / 2;
+    miniScene.add(curDot);
+
+    // Label "PATH" บน minimap (canvas texture)
+    function makeLabelCanvas(text) {
+      const c = document.createElement("canvas");
+      c.width = 100; c.height = 24;
+      const cx2 = c.getContext("2d");
+      cx2.fillStyle = "rgba(0,0,0,0)";
+      cx2.fillRect(0, 0, c.width, c.height);
+      cx2.fillStyle = "#7480a3";
+      cx2.font = "bold 11px monospace";
+      cx2.fillText(text, 4, 16);
+      return new THREE.CanvasTexture(c);
+    }
+
+    // ---- ใน tick() อัปเดต trail และ minimap ----
+    // เก็บ ref ไว้ใช้ใน tick
+    const trailState = { recording: false, motionType: "PTP" };
+    if (trailControlRef) {
+      const orig = trailControlRef.current;
+      trailControlRef.current = {
+        ...orig,
+        start: (mt) => { trailState.recording = true; trailState.motionType = mt || "PTP"; if (trailCount > 0 && lastTrailPos) addWaypointDot(lastTrailPos, mt); },
+        stop: () => { trailState.recording = false; if (lastTrailPos) addWaypointDot(lastTrailPos, "PTP"); },
+        clear: clearTrail,
+        getCount: () => trailCount,
+      };
+    }
 
     const loader = new GLTFLoader();
     loader.load(
@@ -417,7 +597,9 @@ function useArmScene(containerRef, joints, onIkDrag) {
       window.removeEventListener("pointerup", onPointerUp);
       renderer.domElement.removeEventListener("wheel", onWheel);
       renderer.dispose();
+      miniRenderer.dispose();
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
+      if (container.contains(miniRenderer.domElement)) container.removeChild(miniRenderer.domElement);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -437,519 +619,19 @@ function useArmScene(containerRef, joints, onIkDrag) {
 
   return { modelReady, modelError };
 }
-
-// ---------------------------------------------------------------------------
-// Motion Path Visualizer — Canvas-based 2D path drawing for PTP / LIN / CIRC
-// ---------------------------------------------------------------------------
-const MOTION_COLORS = { PTP: "#3b6cf6", LIN: "#22c55e", CIRC: "#f59e0b" };
-const MOTION_DASH   = { PTP: [6, 5], LIN: [], CIRC: [3, 4] };
-
-function MotionPathCanvas({ waypoints, motionType, zoom, pan, highlightIdx }) {
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width;
-    const H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-
-    // Grid
-    const gridStep = 40 * zoom;
-    const ox = (W / 2 + pan.x) % gridStep;
-    const oy = (H / 2 + pan.y) % gridStep;
-    ctx.strokeStyle = "rgba(28,35,64,0.9)";
-    ctx.lineWidth = 1;
-    for (let x = ox; x < W; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-    for (let y = oy; y < H; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-
-    // Axes
-    const cx = W / 2 + pan.x;
-    const cy = H / 2 + pan.y;
-    ctx.strokeStyle = "rgba(74,90,138,0.6)";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-    ctx.fillStyle = "rgba(74,90,138,0.6)";
-    ctx.font = "10px monospace";
-    ctx.fillText("X", W - 16, cy - 6);
-    ctx.fillText("Y", cx + 6, 14);
-
-    // Scale label
-    const unitPx = 40 * zoom;
-    ctx.fillStyle = "#4c5578";
-    ctx.font = "9px monospace";
-    ctx.fillText(`${(100 / zoom).toFixed(0)} mm / grid`, 8, H - 8);
-
-    if (waypoints.length < 1) return;
-
-    // World→canvas
-    const tw = (x) => cx + x * zoom;
-    const ty = (y) => cy - y * zoom;
-
-    // Draw path segments
-    for (let i = 1; i < waypoints.length; i++) {
-      const prev = waypoints[i - 1];
-      const curr = waypoints[i];
-      const mt = curr.motionType || motionType;
-      const col = MOTION_COLORS[mt] || MOTION_COLORS.PTP;
-      const dash = MOTION_DASH[mt] || [];
-
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 2.2;
-      ctx.globalAlpha = 0.85;
-      ctx.setLineDash(dash);
-      ctx.beginPath();
-
-      if (mt === "CIRC" && curr.via) {
-        // Simple arc through midpoint approximation using bezier
-        const mx = tw(curr.via.x), my = ty(curr.via.y);
-        ctx.moveTo(tw(prev.x), ty(prev.y));
-        ctx.quadraticCurveTo(mx, my, tw(curr.x), ty(curr.y));
-      } else if (mt === "PTP") {
-        // Curved arc (joint-space interpolation feel)
-        const x1 = tw(prev.x), y1 = ty(prev.y);
-        const x2 = tw(curr.x), y2 = ty(curr.y);
-        const cpx = (x1 + x2) / 2 + (y2 - y1) * 0.3;
-        const cpy = (y1 + y2) / 2 - (x2 - x1) * 0.3;
-        ctx.moveTo(x1, y1);
-        ctx.quadraticCurveTo(cpx, cpy, x2, y2);
-      } else {
-        // LIN — straight line
-        ctx.moveTo(tw(prev.x), ty(prev.y));
-        ctx.lineTo(tw(curr.x), ty(curr.y));
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-
-      // Arrow head at midpoint direction
-      const drawArrow = (fx, fy, tx2, ty2) => {
-        const ang = Math.atan2(ty2 - fy, tx2 - fx);
-        const mx2 = (fx + tx2) / 2, my2 = (fy + ty2) / 2;
-        const sz = 7;
-        ctx.fillStyle = col;
-        ctx.beginPath();
-        ctx.moveTo(mx2 + Math.cos(ang) * sz, my2 + Math.sin(ang) * sz);
-        ctx.lineTo(mx2 + Math.cos(ang + 2.4) * sz * 0.6, my2 + Math.sin(ang + 2.4) * sz * 0.6);
-        ctx.lineTo(mx2 + Math.cos(ang - 2.4) * sz * 0.6, my2 + Math.sin(ang - 2.4) * sz * 0.6);
-        ctx.closePath();
-        ctx.fill();
-      };
-      drawArrow(tw(prev.x), ty(prev.y), tw(curr.x), ty(curr.y));
-
-      // Motion type label
-      const lx = (tw(prev.x) + tw(curr.x)) / 2 + 6;
-      const ly = (ty(prev.y) + ty(curr.y)) / 2 - 8;
-      ctx.fillStyle = col;
-      ctx.font = "bold 9px monospace";
-      ctx.globalAlpha = 0.9;
-      ctx.fillText(mt, lx, ly);
-      ctx.globalAlpha = 1;
-    }
-
-    // Draw waypoint nodes
-    waypoints.forEach((wp, idx) => {
-      const px = tw(wp.x), py = ty(wp.y);
-      const isHome = idx === 0;
-      const isHL = idx === highlightIdx;
-      const r = isHL ? 9 : isHome ? 8 : 6;
-      const col = MOTION_COLORS[wp.motionType || motionType] || MOTION_COLORS.PTP;
-
-      // Outer ring
-      ctx.beginPath();
-      ctx.arc(px, py, r + 3, 0, Math.PI * 2);
-      ctx.fillStyle = isHL
-        ? `rgba(${isHome ? "255,200,50" : "59,108,246"},0.18)`
-        : `rgba(59,108,246,0.08)`;
-      ctx.fill();
-
-      // Main dot
-      ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
-      ctx.fillStyle = isHome ? "#f59e0b" : col;
-      ctx.globalAlpha = isHL ? 1 : 0.9;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-
-      // Border
-      ctx.beginPath();
-      ctx.arc(px, py, r, 0, Math.PI * 2);
-      ctx.strokeStyle = isHL ? "#fff" : isHome ? "#fbbf24" : "#fff";
-      ctx.lineWidth = isHL ? 2 : 1.5;
-      ctx.stroke();
-
-      // Label
-      ctx.fillStyle = "#e7ebf5";
-      ctx.font = `bold ${isHL ? 11 : 10}px monospace`;
-      ctx.fillText(isHome ? "H" : `P${idx}`, px + r + 4, py + 4);
-    });
-  }, [waypoints, motionType, zoom, pan, highlightIdx]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      width={600}
-      height={400}
-      style={{ display: "block", width: "100%", height: "100%" }}
-    />
-  );
-}
-
-// MotionPathPage — หน้าหลักสำหรับวางแผนเส้นทาง
-function MotionPathPage({ joints, onGoToWaypoint }) {
-  const canvasContainerRef = useRef(null);
-  const [waypoints, setWaypoints] = useState([
-    { id: 0, x: 0, y: 0, motionType: "PTP", label: "Home" },
-  ]);
-  const [selectedMotion, setSelectedMotion] = useState("PTP");
-  const [zoom, setZoom] = useState(1.4);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const panStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
-  const [highlightIdx, setHighlightIdx] = useState(null);
-  const [selectedWp, setSelectedWp] = useState(null);
-  const [newX, setNewX] = useState("0");
-  const [newY, setNewY] = useState("0");
-  const [showAddPanel, setShowAddPanel] = useState(false);
-  const [viaX, setViaX] = useState("0");
-  const [viaY, setViaY] = useState("50");
-  const nextId = useRef(1);
-
-  // Canvas click → add waypoint or select
-  const handleCanvasClick = useCallback((e) => {
-    if (isPanning) return;
-    const canvas = e.currentTarget.querySelector("canvas");
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const cx = canvas.width / 2 + pan.x;
-    const cy = canvas.height / 2 + pan.y;
-    const wx = ((e.clientX - rect.left) * scaleX - cx) / zoom;
-    const wy = -(((e.clientY - rect.top) * scaleY) - cy) / zoom;
-    setNewX(wx.toFixed(1));
-    setNewY(wy.toFixed(1));
-    setShowAddPanel(true);
-  }, [zoom, pan, isPanning]);
-
-  const handleAddWaypoint = useCallback(() => {
-    const x = parseFloat(newX) || 0;
-    const y = parseFloat(newY) || 0;
-    const id = nextId.current++;
-    const wp = { id, x, y, motionType: selectedMotion, label: `P${id}` };
-    if (selectedMotion === "CIRC") {
-      wp.via = { x: parseFloat(viaX) || 0, y: parseFloat(viaY) || 50 };
-    }
-    setWaypoints((prev) => [...prev, wp]);
-    setShowAddPanel(false);
-  }, [newX, newY, selectedMotion, viaX, viaY]);
-
-  const handleDeleteWp = useCallback((id) => {
-    setWaypoints((prev) => prev.filter((w) => w.id !== id));
-  }, []);
-
-  const handleClear = useCallback(() => {
-    setWaypoints([{ id: 0, x: 0, y: 0, motionType: "PTP", label: "Home" }]);
-    nextId.current = 1;
-  }, []);
-
-  // Pan handlers on the canvas container
-  const handleMouseDown = useCallback((e) => {
-    if (e.button === 1 || e.altKey) {
-      setIsPanning(true);
-      panStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
-      e.preventDefault();
-    }
-  }, [pan]);
-
-  const handleMouseMove = useCallback((e) => {
-    if (!isPanning) return;
-    const dx = e.clientX - panStart.current.mx;
-    const dy = e.clientY - panStart.current.my;
-    setPan({ x: panStart.current.px + dx, y: panStart.current.py + dy });
-  }, [isPanning]);
-
-  const handleMouseUp = useCallback(() => setIsPanning(false), []);
-
-  const handleWheel = useCallback((e) => {
-    e.preventDefault();
-    setZoom((z) => Math.max(0.4, Math.min(4, z * (e.deltaY < 0 ? 1.1 : 0.9))));
-  }, []);
-
-  const motionInfo = {
-    PTP: { label: "Point-to-Point", desc: "เคลื่อนที่เร็วที่สุด ไม่สนใจเส้นทาง — เหมาะสำหรับการย้ายตำแหน่งอิสระ", icon: <GitBranch size={13} /> },
-    LIN: { label: "Linear", desc: "เคลื่อนที่เป็นเส้นตรง — ใช้สำหรับงานเชื่อมหรือตัด", icon: <Minus size={13} /> },
-    CIRC: { label: "Circular", desc: "เคลื่อนที่โค้งวงกลมผ่านจุด Via — ใช้สำหรับงานเส้นโค้งแม่นยำ", icon: <Circle size={13} /> },
-  };
-
-  return (
-    <div className="flex-1 min-h-0 flex gap-4 p-4" style={{ overflow: "hidden" }}>
-      {/* ---- Left: Canvas viewer ---- */}
-      <div className="flex-1 min-w-0 flex flex-col gap-3">
-        {/* Motion type selector */}
-        <div
-          className="flex gap-2 p-3 rounded-xl shrink-0"
-          style={{ background: C.panel, border: `1px solid ${C.border}` }}
-        >
-          {["PTP", "LIN", "CIRC"].map((mt) => (
-            <button
-              key={mt}
-              onClick={() => setSelectedMotion(mt)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all"
-              style={{
-                background: selectedMotion === mt ? MOTION_COLORS[mt] : C.panelAlt,
-                color: selectedMotion === mt ? "#fff" : C.sub,
-                border: `1px solid ${selectedMotion === mt ? MOTION_COLORS[mt] : C.borderSoft}`,
-                boxShadow: selectedMotion === mt ? `0 0 12px ${MOTION_COLORS[mt]}44` : "none",
-              }}
-            >
-              {motionInfo[mt].icon}
-              <span>{mt}</span>
-              <span style={{ opacity: 0.7, fontWeight: 400 }}>— {motionInfo[mt].label}</span>
-            </button>
-          ))}
-          <div className="flex-1" />
-          {/* Zoom controls */}
-          <button onClick={() => setZoom((z) => Math.min(4, z * 1.2))} title="Zoom In"
-            className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
-            style={{ background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}` }}>
-            <ZoomIn size={13} />
-          </button>
-          <button onClick={() => setZoom((z) => Math.max(0.4, z / 1.2))} title="Zoom Out"
-            className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
-            style={{ background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}` }}>
-            <ZoomOut size={13} />
-          </button>
-          <button onClick={() => { setZoom(1.4); setPan({ x: 0, y: 0 }); }} title="Reset View"
-            className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors"
-            style={{ background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}` }}>
-            <RotateCcw size={13} />
-          </button>
-        </div>
-
-        {/* Canvas */}
-        <div
-          ref={canvasContainerRef}
-          className="flex-1 min-h-0 rounded-2xl overflow-hidden relative"
-          style={{
-            background: C.panelAlt,
-            border: `1px solid ${C.border}`,
-            cursor: isPanning ? "grabbing" : "crosshair",
-          }}
-          onClick={handleCanvasClick}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
-        >
-          <MotionPathCanvas
-            waypoints={waypoints}
-            motionType={selectedMotion}
-            zoom={zoom}
-            pan={pan}
-            highlightIdx={highlightIdx}
-          />
-
-          {/* Hint overlay */}
-          <div
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-[10px]"
-            style={{ background: "rgba(10,14,26,0.75)", color: C.sub, backdropFilter: "blur(8px)", pointerEvents: "none" }}
-          >
-            คลิกบน Canvas เพื่อเพิ่มจุด · Alt+ลาก = เลื่อนมุมมอง · Scroll = Zoom
-          </div>
-
-          {/* Motion type legend */}
-          <div
-            className="absolute top-3 left-3 flex flex-col gap-1.5 p-2.5 rounded-xl"
-            style={{ background: "rgba(10,14,26,0.82)", border: `1px solid ${C.border}`, backdropFilter: "blur(8px)", pointerEvents: "none" }}
-          >
-            {["PTP", "LIN", "CIRC"].map((mt) => (
-              <div key={mt} className="flex items-center gap-2">
-                <svg width="28" height="10">
-                  {mt === "LIN" && <line x1="0" y1="5" x2="28" y2="5" stroke={MOTION_COLORS[mt]} strokeWidth="2" />}
-                  {mt === "PTP" && <path d="M0,5 Q14,0 28,5" stroke={MOTION_COLORS[mt]} strokeWidth="2" fill="none" strokeDasharray="6,4" />}
-                  {mt === "CIRC" && <path d="M0,8 Q14,-2 28,8" stroke={MOTION_COLORS[mt]} strokeWidth="2" fill="none" strokeDasharray="3,3" />}
-                </svg>
-                <span style={{ color: MOTION_COLORS[mt], fontSize: 10, fontFamily: "monospace" }}>{mt}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Add waypoint panel (appears after canvas click) */}
-        {showAddPanel && (
-          <div
-            className="shrink-0 p-3 rounded-xl flex items-center gap-3 flex-wrap"
-            style={{ background: C.panel, border: `1px solid ${C.accent}33` }}
-          >
-            <span className="text-xs font-semibold" style={{ color: C.accent }}>เพิ่มจุด {selectedMotion}</span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px]" style={{ color: C.sub }}>X</span>
-              <input value={newX} onChange={(e) => setNewX(e.target.value)} className="w-20 px-2 py-1 rounded-lg text-xs outline-none text-right"
-                style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }} />
-              <span className="text-[10px]" style={{ color: C.sub }}>Y</span>
-              <input value={newY} onChange={(e) => setNewY(e.target.value)} className="w-20 px-2 py-1 rounded-lg text-xs outline-none text-right"
-                style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }} />
-            </div>
-            {selectedMotion === "CIRC" && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px]" style={{ color: C.sub }}>Via X</span>
-                <input value={viaX} onChange={(e) => setViaX(e.target.value)} className="w-16 px-2 py-1 rounded-lg text-xs outline-none text-right"
-                  style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }} />
-                <span className="text-[10px]" style={{ color: C.sub }}>Via Y</span>
-                <input value={viaY} onChange={(e) => setViaY(e.target.value)} className="w-16 px-2 py-1 rounded-lg text-xs outline-none text-right"
-                  style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }} />
-              </div>
-            )}
-            <button onClick={handleAddWaypoint}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold"
-              style={{ background: MOTION_COLORS[selectedMotion], color: "#fff" }}>
-              <Plus size={11} /> เพิ่ม
-            </button>
-            <button onClick={() => setShowAddPanel(false)}
-              className="px-3 py-1.5 rounded-lg text-xs"
-              style={{ background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}` }}>
-              ยกเลิก
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ---- Right: Waypoint list + info panel ---- */}
-      <div className="w-[280px] shrink-0 flex flex-col gap-3">
-        {/* Motion type info card */}
-        <div
-          className="p-3.5 rounded-xl"
-          style={{ background: C.panel, border: `1px solid ${MOTION_COLORS[selectedMotion]}33` }}
-        >
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-6 h-6 rounded-md flex items-center justify-center" style={{ background: `${MOTION_COLORS[selectedMotion]}22`, color: MOTION_COLORS[selectedMotion] }}>
-              {motionInfo[selectedMotion].icon}
-            </div>
-            <span className="text-[13px] font-semibold" style={{ color: MOTION_COLORS[selectedMotion] }}>{selectedMotion}</span>
-            <span className="text-[11px]" style={{ color: C.sub }}>— {motionInfo[selectedMotion].label}</span>
-          </div>
-          <p className="text-[11px] leading-relaxed" style={{ color: C.sub }}>{motionInfo[selectedMotion].desc}</p>
-          <div className="mt-2.5 flex items-center gap-2">
-            <svg width="60" height="20">
-              {selectedMotion === "LIN" && <line x1="4" y1="10" x2="56" y2="10" stroke={MOTION_COLORS.LIN} strokeWidth="2" />}
-              {selectedMotion === "PTP" && <path d="M4,16 Q30,2 56,16" stroke={MOTION_COLORS.PTP} strokeWidth="2" fill="none" strokeDasharray="6,4" />}
-              {selectedMotion === "CIRC" && <path d="M4,16 Q30,0 56,16" stroke={MOTION_COLORS.CIRC} strokeWidth="2" fill="none" strokeDasharray="3,3" />}
-            </svg>
-            <span className="text-[9px]" style={{ color: C.subDim }}>รูปแบบเส้นทาง</span>
-          </div>
-        </div>
-
-        {/* Waypoints list */}
-        <div
-          className="flex-1 min-h-0 rounded-xl flex flex-col"
-          style={{ background: C.panel, border: `1px solid ${C.border}` }}
-        >
-          <div className="flex items-center justify-between px-3.5 py-2.5" style={{ borderBottom: `1px solid ${C.border}` }}>
-            <span className="text-[11px] font-semibold tracking-wide" style={{ color: C.subDim }}>
-              WAYPOINTS ({waypoints.length})
-            </span>
-            <button onClick={handleClear} title="ล้างทั้งหมด"
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] transition-colors"
-              style={{ background: "rgba(239,68,68,0.10)", color: C.red }}>
-              <Trash2 size={10} /> ล้าง
-            </button>
-          </div>
-
-          <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
-            {waypoints.map((wp, idx) => {
-              const col = MOTION_COLORS[wp.motionType] || MOTION_COLORS.PTP;
-              const isHome = idx === 0;
-              return (
-                <div
-                  key={wp.id}
-                  className="flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer transition-all"
-                  style={{
-                    background: highlightIdx === idx ? `${col}18` : C.panelAlt,
-                    border: `1px solid ${highlightIdx === idx ? col : C.borderSoft}`,
-                  }}
-                  onMouseEnter={() => setHighlightIdx(idx)}
-                  onMouseLeave={() => setHighlightIdx(null)}
-                >
-                  {/* Color dot */}
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0"
-                    style={{ background: isHome ? "#f59e0b" : col, color: "#fff" }}>
-                    {isHome ? "H" : idx}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-medium truncate" style={{ color: C.text }}>
-                        {isHome ? "Home" : `P${idx}`}
-                      </span>
-                      {!isHome && (
-                        <span className="text-[9px] px-1 rounded" style={{ background: `${col}22`, color: col }}>
-                          {wp.motionType}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] font-mono" style={{ color: C.sub }}>
-                      X: {wp.x.toFixed(1)}  Y: {wp.y.toFixed(1)}
-                      {wp.via && <span style={{ color: C.subDim }}> via({wp.via.x},{wp.via.y})</span>}
-                    </div>
-                  </div>
-
-                  {!isHome && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteWp(wp.id); }}
-                      className="p-1 rounded-md shrink-0 transition-colors"
-                      style={{ background: "rgba(239,68,68,0.10)", color: C.red }}>
-                      <Trash2 size={10} />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-
-            {waypoints.length === 1 && (
-              <div className="flex flex-col items-center justify-center py-6 gap-2">
-                <Activity size={20} color={C.subDim} />
-                <p className="text-[11px] text-center leading-relaxed" style={{ color: C.subDim }}>
-                  คลิกบน Canvas<br />เพื่อเพิ่มจุดเส้นทาง
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Summary footer */}
-          {waypoints.length > 1 && (
-            <div className="px-3.5 py-2.5 flex gap-3" style={{ borderTop: `1px solid ${C.border}` }}>
-              {["PTP", "LIN", "CIRC"].map((mt) => {
-                const cnt = waypoints.filter((w) => w.motionType === mt).length;
-                if (cnt === 0) return null;
-                return (
-                  <div key={mt} className="flex items-center gap-1">
-                    <div className="w-2 h-2 rounded-full" style={{ background: MOTION_COLORS[mt] }} />
-                    <span className="text-[10px]" style={{ color: C.sub }}>{mt} ×{cnt}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 export default function RoboticArmControl() {
-  const [activeTab, setActiveTab] = useState("control"); // "control" | "motion"
   const [ports, setPorts] = useState(["COM3"]);
   const [selectedPort, setSelectedPort] = useState("COM3");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+
+  // Trail recording controls
+  const trailControlRef = useRef(null);
+  const [trailActive, setTrailActive] = useState(false);
+  const [trailCount, setTrailCount] = useState(0);
 
   const [joints, setJoints] = useState(HOME);
   const jointsRef = useRef(HOME);
@@ -1034,11 +716,21 @@ export default function RoboticArmControl() {
       j1: Number.isFinite(parsed.j1) ? parsed.j1 : jointsRef.current.j1,
       j2: Number.isFinite(parsed.j2) ? parsed.j2 : jointsRef.current.j2,
       j3: Number.isFinite(parsed.j3) ? parsed.j3 : jointsRef.current.j3,
-      j4: 90, // J4 เป็นค่าคงตัว ไม่เปลี่ยนแปลง
+      j4: 90,
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
-    animateToJoints(targetJoints);
-  }, [jointInputs, animateToJoints]);
+    // บันทึก trail อัตโนมัติระหว่างการเคลื่อนที่
+    if (trailControlRef.current) {
+      trailControlRef.current.start(motionType);
+      setTrailActive(true);
+      animateToJoints(targetJoints).then(() => {
+        trailControlRef.current?.stop();
+        setTrailActive(false);
+      });
+    } else {
+      animateToJoints(targetJoints);
+    }
+  }, [jointInputs, animateToJoints, motionType]);
 
   // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
@@ -1114,7 +806,7 @@ export default function RoboticArmControl() {
   }, []);
 
   const viewerRef = useRef(null);
-  const { modelReady, modelError } = useArmScene(viewerRef, joints, handleIkDrag);
+  const { modelReady, modelError } = useArmScene(viewerRef, joints, handleIkDrag, trailControlRef);
 
   // ---- ปุ่ม Home: เคลื่อนที่กลับตำแหน่งเริ่มต้นแบบค่อยๆ ขยับ ----
   const handleHome = useCallback(() => {
@@ -1161,6 +853,7 @@ export default function RoboticArmControl() {
       className="w-full h-full min-h-screen flex flex-col"
       style={{ background: C.bg, fontFamily: "'IBM Plex Sans Thai', 'Inter', sans-serif" }}
     >
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
       {/* ---------------- Header ---------------- */}
       <div className="flex items-center justify-between px-5 py-3 shrink-0" style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}>
         <div className="flex items-center gap-4">
@@ -1171,35 +864,6 @@ export default function RoboticArmControl() {
             <span className="text-[15px] font-semibold" style={{ color: C.text }}>ANR Robot Studio</span>
           </div>
 
-          {/* Tab navigation */}
-          <div className="flex items-center gap-1 p-1 rounded-xl" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
-            <button
-              onClick={() => setActiveTab("control")}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-              style={{
-                background: activeTab === "control" ? C.panel : "transparent",
-                color: activeTab === "control" ? C.text : C.sub,
-                border: activeTab === "control" ? `1px solid ${C.border}` : "1px solid transparent",
-                boxShadow: activeTab === "control" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
-              }}
-            >
-              <Move size={12} />
-              ควบคุมหุ่นยนต์
-            </button>
-            <button
-              onClick={() => setActiveTab("motion")}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-              style={{
-                background: activeTab === "motion" ? C.panel : "transparent",
-                color: activeTab === "motion" ? C.text : C.sub,
-                border: activeTab === "motion" ? `1px solid ${C.border}` : "1px solid transparent",
-                boxShadow: activeTab === "motion" ? "0 2px 8px rgba(0,0,0,0.3)" : "none",
-              }}
-            >
-              <Activity size={12} />
-              เส้นทางการเคลื่อนที่
-            </button>
-          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -1252,13 +916,8 @@ export default function RoboticArmControl() {
         </div>
       </div>
 
-      {/* ---------------- Tab Content ---------------- */}
-      {activeTab === "motion" && (
-        <MotionPathPage joints={joints} onGoToWaypoint={(wp) => {}} />
-      )}
-
       {/* ---------------- 3D Robot Arm Viewer + Control Panel (floating overlay) ---------------- */}
-      <div className="flex-1 min-h-0 p-4 relative" style={{ display: activeTab === "control" ? "block" : "none" }}>
+      <div className="flex-1 min-h-0 p-4 relative">
         <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div ref={viewerRef} className="w-full h-full" />
           {!modelReady && !modelError && (
@@ -1269,6 +928,36 @@ export default function RoboticArmControl() {
           {modelError && (
             <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.red }}>
               โหลดโมเดล 3D ไม่สำเร็จ
+            </div>
+          )}
+
+          {/* Minimap label overlay — HTML on top of Three.js minimap canvas at top-left */}
+          {modelReady && (
+            <div
+              className="absolute pointer-events-none"
+              style={{ top: 16, left: 16, width: 180, height: 180, zIndex: 25 }}
+            >
+              {/* Title bar at bottom of minimap */}
+              <div
+                className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2.5 py-1.5 rounded-b-xl"
+                style={{
+                  background: "rgba(10,14,26,0.88)",
+                  borderTop: `1px solid rgba(28,35,64,0.8)`,
+                }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Activity size={9} color={C.accent} />
+                  <span style={{ fontSize: 9, fontFamily: "monospace", color: C.sub, fontWeight: 600, letterSpacing: "0.05em" }}>
+                    PATH VIEW
+                  </span>
+                </div>
+                {trailActive && (
+                  <div className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}`, animation: "pulse 1s infinite" }} />
+                    <span style={{ fontSize: 8, color: C.red, fontFamily: "monospace" }}>REC</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1352,6 +1041,71 @@ export default function RoboticArmControl() {
             <Move size={14} />
             {isMoving && !isPlayingAll ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
           </button>
+
+          {/* ---- Trail recording controls ---- */}
+          <div style={{ borderTop: `1px solid ${C.borderSoft}`, paddingTop: 12 }}>
+            <div className="text-[10px] font-semibold tracking-wide mb-2" style={{ color: C.subDim }}>
+              MOTION TRAIL
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!trailControlRef.current || !modelReady) return;
+                  if (trailActive) {
+                    trailControlRef.current.stop();
+                    setTrailActive(false);
+                  } else {
+                    trailControlRef.current.start(motionType);
+                    setTrailActive(true);
+                  }
+                }}
+                disabled={!modelReady}
+                className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-semibold transition-all"
+                style={{
+                  background: trailActive
+                    ? "rgba(239,68,68,0.15)"
+                    : "rgba(34,197,94,0.15)",
+                  color: trailActive ? C.red : C.green,
+                  border: `1px solid ${trailActive ? C.red : C.green}44`,
+                  opacity: !modelReady ? 0.5 : 1,
+                }}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    background: trailActive ? C.red : C.green,
+                    boxShadow: trailActive ? `0 0 6px ${C.red}` : "none",
+                    animation: trailActive ? "pulse 1s infinite" : "none",
+                  }}
+                />
+                {trailActive ? "หยุดบันทึก" : "บันทึกเส้นทาง"}
+              </button>
+              <button
+                onClick={() => {
+                  trailControlRef.current?.clear();
+                  setTrailCount(0);
+                  setTrailActive(false);
+                }}
+                disabled={!modelReady}
+                title="ล้างเส้นทาง"
+                className="px-3 py-2 rounded-xl text-xs transition-colors"
+                style={{
+                  background: C.panelAlt,
+                  color: C.sub,
+                  border: `1px solid ${C.borderSoft}`,
+                  opacity: !modelReady ? 0.5 : 1,
+                }}
+              >
+                <RotateCcw size={13} />
+              </button>
+            </div>
+            {trailActive && (
+              <div className="mt-2 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}` }} />
+                <span className="text-[10px]" style={{ color: C.subDim }}>กำลังบันทึก — เคลื่อนแขนเพื่อวาดเส้น</span>
+              </div>
+            )}
+          </div>
 
           {/* Save current pose */}
           <button
