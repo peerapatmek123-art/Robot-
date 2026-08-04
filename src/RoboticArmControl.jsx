@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation, Home as HomeIcon } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation, Home as HomeIcon, Save, Trash2, PlayCircle, BookMarked } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -394,11 +394,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       if (spec && spec.axis && onIkDragRef.current && s && s.translateGizmo) {
         // ลากลูกศร -> โหมด IK translate ตามแกนเดียว (คำนวณผ่าน ray-plane intersection จริง)
         const gizmoPos = s.translateGizmo.position;
-        // ใช้ทิศจริงของลูกศรในโลก (หลังหมุนตาม J1) แทนทิศ world-fixed
-        // เพื่อให้ drag plane ตั้งฉากกับลูกศรที่มองเห็นจริงบนจอ
-        _dragLineDir.copy(AXIS_VECTORS[spec.axis])
-          .applyEuler(s.translateGizmo.rotation)
-          .normalize();
+        _dragLineDir.copy(AXIS_VECTORS[spec.axis]).normalize();
         camera.getWorldDirection(_camForward);
         _camRight.crossVectors(_camForward, _dragLineDir);
         if (_camRight.lengthSq() < 1e-6) _camRight.crossVectors(_camForward, camera.up);
@@ -446,13 +442,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
           const t = _intersectPoint.clone().sub(handleDrag.lineOrigin).dot(handleDrag.lineDir);
           const deltaT = t - handleDrag.lastT;
           handleDrag.lastT = t;
-          // handleDrag.lineDir คือทิศลูกศรจริงในโลก (หมุนตาม J1 แล้ว)
-          // คูณ deltaT กับทิศลูกศรเพื่อได้ delta XYZ จริงในพิกัดโลก แล้วส่งแบบ xyz
-          // วิธีนี้ทำให้ลากลูกศร Z ตามหน้าแขนกลได้ถูกต้อง ไม่ว่า J1 จะหมุนไปเท่าไหร่
-          const dx = handleDrag.lineDir.x * deltaT / modelScale;
-          const dy = handleDrag.lineDir.y * deltaT / modelScale;
-          const dz = handleDrag.lineDir.z * deltaT / modelScale;
-          onIkDragRef.current?.("xyz", { x: dx, y: dy, z: dz });
+          onIkDragRef.current?.(handleDrag.spec.axis, deltaT / modelScale);
         }
         return;
       }
@@ -529,13 +519,6 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
         // ไปจริง 1:1 ตามเมาส์เสมอ) แล้วค่อย snap กลับไปตำแหน่งจริงตอนปล่อยเมาส์
         if (!handleDrag.active) {
           s.translateGizmo.position.copy(_eeWorldPos);
-        }
-        // หมุน gizmo ให้แกน Z (ลูกศรน้ำเงิน) ชี้ไปตาม "ทิศข้างหน้าของแขนกล" เสมอ
-        // ซึ่งกำหนดโดย J1 (rotation.y ของฐาน) — แขนยื่นออกตาม sin(j1), cos(j1) ในระนาบ XZ
-        // เดิมลูกศร Z ชี้ทิศคงที่ในโลก (0,0,-1) ทำให้ลากแกน Z แล้วแขนไปผิดทิศเมื่อหมุนฐาน
-        if (s.baseGroup) {
-          const j1 = s.baseGroup.rotation.y; // radians
-          s.translateGizmo.rotation.y = j1;
         }
         // คงขนาด gizmo ให้ดู "เท่าเดิมบนจอ" ไม่ว่าจะซูมเข้า/ออกแค่ไหน
         // (ไม่งั้นตอนซูมออกลูกศรจะเล็กจิ๋วจนลากยากมาก) — สเกลตามระยะกล้องจริง
@@ -669,7 +652,7 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       // ไม่ว่ารูปทรง/ทิศทางของมือคีบจะเป็นอย่างไรก็ตาม ไม่ต้องพึ่งสมมติฐานเรื่องทิศทาง L4 เลย
       const ikChain = [
         { obj: s.baseGroup, axis: "y", limMin: -180, limMax: 180 },
-        { obj: s.shoulder, axis: "x", limMin: 90, limMax: -90, negate: true },
+        { obj: s.shoulder, axis: "x", limMin: -90, limMax: 90 },
         { obj: s.elbow, axis: "y", limMin: -135, limMax: 135 },
         { obj: s.wrist, axis: "y", limMin: -135, limMax: 135 },
       ];
@@ -718,11 +701,8 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
             const limRad = THREE.MathUtils.degToRad;
             const rot = joint.rotation;
             const cur = link.axis === "x" ? rot.x : rot.y;
-            // negate: rotation ของ joint นี้ถูก apply เป็น -jValue เสมอ (เช่น shoulder ใช้ d(-j2))
-            // ดังนั้น limMin/limMax ที่อ้างอิงค่า j (บวกคือยกขึ้น) ต้องกลับทิศก่อน clamp rotation จริง
-            const sign = link.negate ? -1 : 1;
             let next = cur + angle;
-            next = Math.max(limRad(link.limMin) * sign, Math.min(limRad(link.limMax) * sign, next));
+            next = Math.max(limRad(link.limMin), Math.min(limRad(link.limMax), next));
             if (link.axis === "x") rot.x = next; else rot.y = next;
             joint.updateMatrixWorld(true);
           }
@@ -803,15 +783,12 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       s.gizmoParts = {};
 
       // ---- ลูกศรเลื่อน XYZ (world space) -> ผูกกับ IK จริง ----
-      // หมายเหตุ: กล้องเริ่มต้นมอง -Z (azimuth ~0.28π ทำให้ +Z อยู่ "ด้านหลัง" ในจอ)
-      // พลิกลูกศร Z ให้ชี้ (0,0,-1) เพื่อให้ทิศ "ข้างหน้า" ตรงกับสัญชาตญาณผู้ใช้
-      // และ deltaT ที่ได้จาก ray-plane projection จะถูก negate ก่อนส่งต่อ ให้ Z IK target ถูกทิศ
       const translateGizmo = new THREE.Group();
       translateGizmo.name = "IK_TranslateGizmo";
       const arrows = [
         { key: "x", data: makeArrow(new THREE.Vector3(1, 0, 0), 0xef4444, "x") },
         { key: "y", data: makeArrow(new THREE.Vector3(0, 1, 0), 0x22c55e, "y") },
-        { key: "z", data: makeArrow(new THREE.Vector3(0, 0, -1), 0x3b6cf6, "z") },
+        { key: "z", data: makeArrow(new THREE.Vector3(0, 0, 1), 0x3b6cf6, "z") },
       ];
       arrows.forEach(({ key, data }) => {
         translateGizmo.add(data.grp);
@@ -933,6 +910,26 @@ export default function RoboticArmControl() {
   const ikTargetRef = useRef(ikTarget); // แหล่งข้อมูลจริงแบบ sync ใช้ตอนลากกิซโมต่อเนื่อง
   const [ikError, setIkError] = useState("");
   const [ikMode, setIkMode] = useState(false); // toggle IK / Joint input panel
+
+  // ---- Pose Library: บันทึกตำแหน่งแขนกล (มุมข้อต่อ J1-J5) เก็บเป็นท่าไว้เรียกใช้ภายหลัง ----
+  const POSES_STORAGE_KEY = "anr_robot_saved_poses_v1";
+  const [savedPoses, setSavedPoses] = useState(() => {
+    try {
+      const raw = localStorage.getItem(POSES_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [poseNameDraft, setPoseNameDraft] = useState("");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(POSES_STORAGE_KEY, JSON.stringify(savedPoses));
+    } catch {
+      /* เก็บไม่ได้ (เช่น storage เต็ม) — ปล่อยผ่าน ไม่ต้องล้มทั้งแอป */
+    }
+  }, [savedPoses]);
 
   // FK readout — อัปเดตทุกครั้งที่ joint เปลี่ยน
   const fkPos = forwardKinematics(joints.j1, joints.j2, joints.j3);
@@ -1170,6 +1167,34 @@ export default function RoboticArmControl() {
       },
     });
   }, [moving, animateJoints]);
+
+  // ---- บันทึกท่าปัจจุบันของแขนกล (มุมข้อต่อ J1-J5) เป็นท่าใหม่ในไลบรารี ----
+  const handleSavePose = useCallback(() => {
+    const name = poseNameDraft.trim() || `ท่า ${savedPoses.length + 1}`;
+    const pose = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      joints: { ...jointsRef.current },
+      createdAt: Date.now(),
+    };
+    setSavedPoses((prev) => [...prev, pose]);
+    setPoseNameDraft("");
+  }, [poseNameDraft, savedPoses.length]);
+
+  // ---- เคลื่อนแขนกลไปยังท่าที่บันทึกไว้ (ผ่าน HOME ก่อนเสมอ ตามรูปแบบ Move ปกติ) ----
+  const handleGoToPose = useCallback((pose) => {
+    if (moving) return;
+    setTargets(pose.joints);
+    runFromHome(pose.joints, motionType, () => {
+      const fk = forwardKinematics(pose.joints.j1, pose.joints.j2, pose.joints.j3);
+      ikTargetRef.current = fk;
+      setIkTarget(fk);
+    });
+  }, [moving, motionType, runFromHome]);
+
+  const handleDeletePose = useCallback((id) => {
+    setSavedPoses((prev) => prev.filter((p) => p.id !== id));
+  }, []);
 
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
@@ -1479,6 +1504,91 @@ export default function RoboticArmControl() {
                     ? `IK Move (${motionType})`
                     : `Move (${motionType})`}
               </button>
+            </div>
+          </div>
+
+          {/* ---------------- Pose Library panel (บันทึก/เรียกใช้ท่า) ---------------- */}
+          <div
+            className="absolute top-4 left-4 w-64 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+            style={{
+              maxHeight: "calc(100% - 32px)",
+              background: "rgba(16,21,42,0.92)",
+              border: `1px solid ${C.border}`,
+              backdropFilter: "blur(6px)",
+            }}
+          >
+            <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5 shrink-0" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+              <BookMarked size={14} color={C.accent} />
+              <span className="text-xs font-semibold" style={{ color: C.text }}>Pose Library</span>
+            </div>
+
+            {/* บันทึกท่าปัจจุบัน */}
+            <div className="px-4 pt-3 pb-3 flex gap-2 shrink-0" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+              <input
+                type="text"
+                value={poseNameDraft}
+                onChange={(e) => setPoseNameDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !moving && modelReady) handleSavePose(); }}
+                placeholder={`ท่า ${savedPoses.length + 1}`}
+                disabled={moving || !modelReady}
+                className="flex-1 min-w-0 rounded-lg px-2.5 py-1.5 text-[12px] outline-none"
+                style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text, opacity: moving ? 0.5 : 1 }}
+              />
+              <button
+                onClick={handleSavePose}
+                disabled={moving || !modelReady}
+                title="บันทึกท่าปัจจุบัน"
+                className="flex items-center justify-center rounded-lg px-2.5 shrink-0 transition-colors"
+                style={{
+                  background: C.accent,
+                  color: "#fff",
+                  cursor: moving || !modelReady ? "default" : "pointer",
+                  opacity: moving || !modelReady ? 0.5 : 1,
+                }}
+              >
+                <Save size={14} />
+              </button>
+            </div>
+
+            {/* รายการท่าที่บันทึกไว้ */}
+            <div className="overflow-y-auto px-2.5 py-2 flex flex-col gap-1.5" style={{ minHeight: 0 }}>
+              {savedPoses.length === 0 && (
+                <div className="px-1.5 py-3 text-[11px] text-center" style={{ color: C.subDim }}>
+                  ยังไม่มีท่าที่บันทึกไว้ — ตั้งชื่อแล้วกดปุ่ม Save ด้านบน
+                </div>
+              )}
+              {savedPoses.map((pose) => (
+                <div
+                  key={pose.id}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-2"
+                  style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12px] font-medium truncate" style={{ color: C.text }}>{pose.name}</div>
+                    <div className="text-[10px] font-mono truncate" style={{ color: C.subDim }}>
+                      J1 {pose.joints.j1.toFixed(0)}° · J2 {pose.joints.j2.toFixed(0)}° · J3 {pose.joints.j3.toFixed(0)}°
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleGoToPose(pose)}
+                    disabled={moving || !modelReady}
+                    title="เคลื่อนไปยังท่านี้"
+                    className="flex items-center justify-center rounded-md p-1.5 shrink-0 transition-colors"
+                    style={{ color: moving || !modelReady ? C.subDim : C.accent, cursor: moving || !modelReady ? "default" : "pointer" }}
+                  >
+                    <PlayCircle size={16} />
+                  </button>
+                  <button
+                    onClick={() => handleDeletePose(pose.id)}
+                    disabled={moving}
+                    title="ลบท่านี้"
+                    className="flex items-center justify-center rounded-md p-1.5 shrink-0 transition-colors"
+                    style={{ color: moving ? C.subDim : C.red, cursor: moving ? "default" : "pointer" }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </div>
