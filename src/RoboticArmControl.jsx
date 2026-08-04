@@ -541,7 +541,7 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
       });
 
       // ---- ลูกศร XYZ (แดง/เขียว/น้ำเงิน) ลากที่ข้อมือ ไม่ผูกกับหมุนของข้อต่อ ----
-      const gizmoLen = 0.13;
+      const gizmoLen = 0.24;
       const HIT_PADDING = 2.0;
       function makeArrow(dir, color, axis) {
         const shaftLen = gizmoLen * 1.3;
