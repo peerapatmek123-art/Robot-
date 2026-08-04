@@ -28,10 +28,15 @@ const C = {
 
 // ---------------------------------------------------------------------------
 // Robot arm link lengths (เมตร) — ใช้แค่ J1 (ฐาน) / J2 (ไหล่) / J3 (ข้อศอก)
+// ค่าเริ่มต้นด้านล่างเป็นเพียงค่าประมาณ — เมื่อโมเดล GLTF โหลดเสร็จ
+// (ดู buildFromGLTF) ระบบจะ "วัดค่าจริง" จากตำแหน่งกระดูกในโมเดลแล้ว
+// เขียนทับตัวแปรเหล่านี้ทันที เพื่อให้ IK/FK ตรงกับรูปทรงจริงของแขนกล
+// (ไม่งั้นแม้สูตรจะคำนวณ "เส้นตรง" ถูกต้อง แต่ตำแหน่งที่ได้จะเพี้ยนจาก
+// โมเดลจริง ทำให้เส้นทางที่เห็นบนหน้าจอยังโค้งอยู่)
 // ---------------------------------------------------------------------------
-const L1 = 0.10; // ความสูงไหล่จากพื้น (m)
-const L2 = 0.105; // แขนบน ไหล่-ข้อศอก (m)
-const L3 = 0.096; // แขนล่าง ข้อศอก-ข้อมือ (m)
+let L1 = 0.10; // ความสูงไหล่จากพื้น (m)
+let L2 = 0.105; // แขนบน ไหล่-ข้อศอก (m)
+let L3 = 0.096; // แขนล่าง ข้อศอก-ปลายนิ้ว/ข้อมือ (m)
 
 const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 const SAVED_POSES_KEY = "anr-robot-studio:saved-poses";
@@ -562,6 +567,46 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
         console.error("GLTF model is missing expected named objects:", missing);
         setModelError(true);
         return;
+      }
+
+      // ---- Auto-calibrate L1/L2/L3 จากโมเดลจริง --------------------------
+      // ระยะไหล่→ข้อศอก และข้อศอก→ปลายนิ้ว เป็น "ระยะแข็ง" (rigid distance)
+      // ที่ไม่เปลี่ยนตามมุมหมุนของ J1/J2/J3 (การหมุนกระดูกต้นทางไม่เปลี่ยน
+      // ระยะห่างไปยังกระดูกปลายทางที่ติดอยู่กับมัน) จึงวัดจากตำแหน่งจริง
+      // ในโลก 3 มิติได้ตรงๆ ไม่ว่าตอนโหลดโมเดลจะอยู่ท่าไหนก็ตาม แล้วใช้
+      // แทนค่าประมาณเดิม ทำให้ solveIK3/fk3 ตรงกับรูปทรงจริงของโมเดล —
+      // นี่คือสิ่งที่ทำให้เส้นทาง LIN/CIRC ที่เห็นบนโมเดลตรง/โค้งเนียนจริง
+      // (หมายเหตุ: ค่า L3 ที่วัดได้จะแม่นยำที่สุดที่มุม J4 ขณะโหลดโมเดล
+      // เพราะปลายนิ้วไม่ได้อยู่บนแกนหมุนของข้อมือพอดี — ถ้า J4 เปลี่ยนมาก
+      // ระหว่างการเคลื่อนที่ L3 ที่ใช้จริงจะคลาดเคลื่อนไปบ้างเล็กน้อย)
+      model.updateMatrixWorld(true);
+      const calShoulder = new THREE.Vector3();
+      const calElbow = new THREE.Vector3();
+      const calTcp = new THREE.Vector3();
+      s.shoulder.getWorldPosition(calShoulder);
+      s.elbow.getWorldPosition(calElbow);
+      if (s.fingerL && s.fingerR) {
+        const boxL = new THREE.Box3().setFromObject(s.fingerL);
+        const boxR = new THREE.Box3().setFromObject(s.fingerR);
+        const cL = new THREE.Vector3();
+        const cR = new THREE.Vector3();
+        boxL.getCenter(cL);
+        boxR.getCenter(cR);
+        calTcp.copy(cL).add(cR).multiplyScalar(0.5);
+      } else {
+        s.wrist.getWorldPosition(calTcp);
+      }
+      const measuredL1 = calShoulder.y;
+      const measuredL2 = calShoulder.distanceTo(calElbow);
+      const measuredL3 = calElbow.distanceTo(calTcp);
+      if (measuredL1 > 0.001 && measuredL2 > 0.001 && measuredL3 > 0.001) {
+        L1 = measuredL1;
+        L2 = measuredL2;
+        L3 = measuredL3;
+      } else {
+        console.warn("Link-length calibration produced an invalid measurement, keeping fallback L1/L2/L3", {
+          measuredL1, measuredL2, measuredL3,
+        });
       }
 
       s.allMeshes = [];
