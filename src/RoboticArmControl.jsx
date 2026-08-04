@@ -274,6 +274,8 @@ function useArmScene(containerRef, joints, onIkDrag) {
     const _wristWorld = new THREE.Vector3();
     const _fingerLWorld = new THREE.Vector3();
     const _fingerRWorld = new THREE.Vector3();
+    const _fingerLBox = new THREE.Box3();
+    const _fingerRBox = new THREE.Box3();
     let raf;
     function tick() {
       applyCamera();
@@ -281,8 +283,12 @@ function useArmScene(containerRef, joints, onIkDrag) {
       if (s && s.ready && s.wrist && s.gizmo) {
         if (!handleDrag.active) {
           if (s.fingerL && s.fingerR) {
-            s.fingerL.getWorldPosition(_fingerLWorld);
-            s.fingerR.getWorldPosition(_fingerRWorld);
+            // ใช้จุดกึ่งกลางกล่องขอบเขต (bounding box) ของนิ้วแต่ละข้าง แทน pivot origin
+            // เพื่อให้ gizmo ไปอยู่ตรงกลางระหว่าง "ปลายมือคีบ" จริงๆ ที่มองเห็น
+            _fingerLBox.setFromObject(s.fingerL);
+            _fingerRBox.setFromObject(s.fingerR);
+            _fingerLBox.getCenter(_fingerLWorld);
+            _fingerRBox.getCenter(_fingerRWorld);
             _wristWorld.copy(_fingerLWorld).add(_fingerRWorld).multiplyScalar(0.5);
           } else {
             s.wrist.getWorldPosition(_wristWorld);
@@ -355,7 +361,7 @@ function useArmScene(containerRef, joints, onIkDrag) {
       });
 
       // ---- ลูกศร XYZ (แดง/เขียว/น้ำเงิน) ลากที่ข้อมือ ไม่ผูกกับหมุนของข้อต่อ ----
-      const gizmoLen = 0.09;
+      const gizmoLen = 0.13;
       const HIT_PADDING = 2.0;
       function makeArrow(dir, color, axis) {
         const shaftLen = gizmoLen * 1.3;
