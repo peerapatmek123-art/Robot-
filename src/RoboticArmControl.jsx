@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Home as HomeIcon, Move } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Home as HomeIcon, Move, Save, Trash2, Play } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -484,14 +484,13 @@ export default function RoboticArmControl() {
       j1: parseFloat(jointInputs.j1),
       j2: parseFloat(jointInputs.j2),
       j3: parseFloat(jointInputs.j3),
-      j4: parseFloat(jointInputs.j4),
       j5: parseFloat(jointInputs.j5),
     };
     const newJoints = {
       j1: Number.isFinite(parsed.j1) ? parsed.j1 : jointsRef.current.j1,
       j2: Number.isFinite(parsed.j2) ? parsed.j2 : jointsRef.current.j2,
       j3: Number.isFinite(parsed.j3) ? parsed.j3 : jointsRef.current.j3,
-      j4: Number.isFinite(parsed.j4) ? parsed.j4 : jointsRef.current.j4,
+      j4: 90, // J4 เป็นค่าคงตัว ไม่เปลี่ยนแปลง
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
     jointsRef.current = newJoints;
@@ -502,8 +501,28 @@ export default function RoboticArmControl() {
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
   // แกน Y: ลากขึ้น (delta บวก) → J2/J3 เคลื่อนที่เข้าหา 0 องศา
   //         ลากลง (delta ลบ) → J2/J3 หมุนไปตามทิศที่ลาก (เหมือนแกน Z)
-  // แกน Z: J2/J3/J4 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
+  // แกน Z: J2/J3 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
+  // J4 เป็นค่าคงตัวที่ 90 องศาเสมอ ไม่ถูกควบคุมโดยการลากแกนใดๆ
   const DEG_PER_UNIT = 400; // ความไว: องศาต่อระยะลาก 1 หน่วย (เมตร) — ปรับได้ตรงนี้
+
+  // ---- บันทึกท่าทาง (Saved Poses) ----
+  const [savedPoses, setSavedPoses] = useState([]); // [{ id, name, joints }]
+
+  const handleSavePose = useCallback(() => {
+    setSavedPoses((prev) => [
+      ...prev,
+      { id: Date.now(), name: `ท่าที่ ${prev.length + 1}`, joints: { ...jointsRef.current } },
+    ]);
+  }, []);
+
+  const handleGoToPose = useCallback((pose) => {
+    jointsRef.current = pose.joints;
+    setJoints(pose.joints);
+  }, []);
+
+  const handleDeletePose = useCallback((id) => {
+    setSavedPoses((prev) => prev.filter((p) => p.id !== id));
+  }, []);
 
   const handleIkDrag = useCallback((axis, delta) => {
     const cur = jointsRef.current;
@@ -533,7 +552,6 @@ export default function RoboticArmControl() {
       const step = delta * DEG_PER_UNIT;
       next.j2 = clampDeg(cur.j2 + step, -90, 90);
       next.j3 = clampDeg(cur.j3 + step, -135, 135);
-      next.j4 = clampDeg(cur.j4 + step, -180, 180);
     }
 
     jointsRef.current = next;
@@ -714,13 +732,15 @@ export default function RoboticArmControl() {
                 <input
                   type="text"
                   inputMode="decimal"
-                  value={jointInputs[key]}
+                  value={key === "j4" ? "90" : jointInputs[key]}
                   onChange={(e) => handleJointInputChange(key, e.target.value)}
+                  disabled={key === "j4"}
                   className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs text-right outline-none"
                   style={{
                     background: C.panelAlt,
                     border: `1px solid ${C.borderSoft}`,
-                    color: C.text,
+                    color: key === "j4" ? C.subDim : C.text,
+                    opacity: key === "j4" ? 0.6 : 1,
                   }}
                 />
               </div>
@@ -741,6 +761,62 @@ export default function RoboticArmControl() {
             <Move size={14} />
             {`Move (${motionType})`}
           </button>
+
+          {/* Save current pose */}
+          <button
+            onClick={handleSavePose}
+            disabled={!modelReady}
+            className="flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-colors"
+            style={{
+              background: C.panelAlt,
+              border: `1px solid ${C.borderSoft}`,
+              color: !modelReady ? C.subDim : C.text,
+              cursor: !modelReady ? "default" : "pointer",
+              opacity: !modelReady ? 0.6 : 1,
+            }}
+          >
+            <Save size={13} />
+            บันทึกท่าทาง
+          </button>
+
+          {/* Saved poses list */}
+          {savedPoses.length > 0 && (
+            <div className="flex flex-col gap-1.5 -mt-1">
+              <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>
+                ท่าทางที่บันทึกไว้
+              </div>
+              <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-0.5">
+                {savedPoses.map((pose) => (
+                  <div
+                    key={pose.id}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
+                    style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}
+                  >
+                    <span className="flex-1 min-w-0 truncate text-xs" style={{ color: C.text }}>
+                      {pose.name}
+                    </span>
+                    <button
+                      onClick={() => handleGoToPose(pose)}
+                      disabled={!modelReady}
+                      title="ไปยังท่านี้"
+                      className="p-1 rounded-md transition-colors"
+                      style={{ background: C.accentSoft, color: C.accent }}
+                    >
+                      <Play size={11} />
+                    </button>
+                    <button
+                      onClick={() => handleDeletePose(pose.id)}
+                      title="ลบท่านี้"
+                      className="p-1 rounded-md transition-colors"
+                      style={{ background: "rgba(239,68,68,0.12)", color: C.red }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
