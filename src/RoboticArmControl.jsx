@@ -496,34 +496,38 @@ export default function RoboticArmControl() {
     };
     jointsRef.current = newJoints;
     setJoints(newJoints);
-
-    // sync ตำแหน่งเป้าหมายของ IK ให้ตรงกับข้อต่อใหม่ กันค่าวิ่งหนีตอนสลับไปลากลูกศรต่อ
-    const d2 = newJoints.j2 * Math.PI / 180, d3 = newJoints.j3 * Math.PI / 180;
-    const j1rad = newJoints.j1 * Math.PI / 180;
-    const rHoriz = L2 * Math.cos(d2) + L3 * Math.cos(d2 - d3);
-    wristTargetRef.current = {
-      x: rHoriz * Math.sin(j1rad),
-      y: L1 + L2 * Math.sin(d2) + L3 * Math.sin(d2 - d3),
-      z: rHoriz * Math.cos(j1rad),
-    };
   }, [jointInputs]);
 
-  // ตำแหน่งเป้าหมาย (ข้อมือ) ที่ลูกศรลากอยู่ — sync กับตำแหน่งจริงเสมอ กันค่าวิ่งหนี
-  const wristTargetRef = useRef({ x: 0, y: L1 + L2 * Math.sin(0) + L3 * Math.sin(-90 * Math.PI / 180), z: L2 + L3 * Math.cos(-90 * Math.PI / 180) });
+  // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
+  // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
+  // แกน Y: J2 และ J3 เคลื่อนที่เข้าหา 0 องศา ตามระยะที่ลาก (ไม่สนทิศทาง)
+  // แกน Z: J2 และ J3 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
+  const DEG_PER_UNIT = 400; // ความไว: องศาต่อระยะลาก 1 หน่วย (เมตร) — ปรับได้ตรงนี้
 
   const handleIkDrag = useCallback((axis, delta) => {
-    const cur = wristTargetRef.current;
-    const MAX_STEP = 0.05;
-    const clampStep = (v) => Math.max(-MAX_STEP, Math.min(MAX_STEP, v));
-    const next = { ...cur, [axis]: (cur[axis] || 0) + clampStep(delta) };
+    const cur = jointsRef.current;
+    const clampDeg = (v, min, max) => Math.max(min, Math.min(max, v));
+    const moveToward = (val, target, step) => {
+      if (val > target) return Math.max(target, val - step);
+      if (val < target) return Math.min(target, val + step);
+      return target;
+    };
 
-    const result = solveIK3(next.x, next.y, next.z);
-    if (!result.ok) return; // นอกพิสัย — ไม่ขยับ (กันค่าเป้าหมายวิ่งหนีตำแหน่งจริง)
+    const next = { ...cur };
+    if (axis === "x") {
+      next.j1 = clampDeg(cur.j1 + delta * DEG_PER_UNIT, -180, 180);
+    } else if (axis === "y") {
+      const step = Math.abs(delta) * DEG_PER_UNIT;
+      next.j2 = moveToward(cur.j2, 0, step);
+      next.j3 = moveToward(cur.j3, 0, step);
+    } else if (axis === "z") {
+      const step = delta * DEG_PER_UNIT;
+      next.j2 = clampDeg(cur.j2 + step, -90, 90);
+      next.j3 = clampDeg(cur.j3 + step, -135, 135);
+    }
 
-    wristTargetRef.current = next;
-    const newJoints = { ...jointsRef.current, j1: result.j1, j2: result.j2, j3: result.j3 };
-    jointsRef.current = newJoints;
-    setJoints(newJoints);
+    jointsRef.current = next;
+    setJoints(next);
   }, []);
 
   const viewerRef = useRef(null);
@@ -533,12 +537,6 @@ export default function RoboticArmControl() {
   const handleHome = useCallback(() => {
     setJoints(HOME);
     jointsRef.current = HOME;
-    const d = HOME.j2 * Math.PI / 180, d3 = HOME.j3 * Math.PI / 180;
-    wristTargetRef.current = {
-      x: 0,
-      y: L1 + L2 * Math.sin(d) + L3 * Math.sin(d - d3),
-      z: L2 * Math.cos(d) + L3 * Math.cos(d - d3),
-    };
   }, []);
 
   const refreshPorts = useCallback(async () => {
