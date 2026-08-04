@@ -64,6 +64,79 @@ function solveIK3(x, y, z) {
   };
 }
 
+/**
+ * fk3 — Forward Kinematics คู่กับ solveIK3 (สมการผกผันของกันและกัน)
+ * รับมุมข้อต่อ J1/J2/J3 (องศา) คืนตำแหน่ง (x,y,z) ของข้อมือในพิกัดฉาก
+ * ใช้สำหรับคำนวณเส้นทางแบบ LIN/CIRC ในพิกัดฉาก ก่อนแปลงกลับเป็นมุมข้อต่อด้วย solveIK3
+ */
+function fk3(j1Deg, j2Deg, j3Deg) {
+  const j1 = THREE.MathUtils.degToRad(j1Deg);
+  const j2 = THREE.MathUtils.degToRad(j2Deg);
+  const j3Mag = THREE.MathUtils.degToRad(Math.abs(j3Deg));
+  const dist = Math.sqrt(L2 * L2 + L3 * L3 + 2 * L2 * L3 * Math.cos(j3Mag));
+  const sinBetaMag = dist > 1e-9 ? THREE.MathUtils.clamp((L3 * Math.sin(j3Mag)) / dist, -1, 1) : 0;
+  const betaMag = Math.asin(sinBetaMag);
+  const alpha = j2 - betaMag;
+  const r = dist * Math.cos(alpha);
+  const dy = dist * Math.sin(alpha);
+  const y = dy + L1;
+  const x = r * Math.sin(j1);
+  const z = r * Math.cos(j1);
+  return new THREE.Vector3(x, y, z);
+}
+
+/**
+ * computeArc — หาวงกลมที่ผ่าน 3 จุด (P0 → Pv → P1) ในพิกัด 3 มิติ
+ * คืนพารามิเตอร์ของส่วนโค้ง (จุดศูนย์กลาง, แกนอ้างอิงในระนาบ, รัศมี, มุมเริ่ม, มุมกวาด)
+ * หรือ null ถ้าจุดทั้ง 3 อยู่แนวเดียวกัน (คำนวณวงกลมไม่ได้)
+ */
+function computeArc(P0, P1, Pv) {
+  const AC = new THREE.Vector3().subVectors(P1, P0);
+  const AB = new THREE.Vector3().subVectors(Pv, P0);
+  const normal = new THREE.Vector3().crossVectors(AB, AC);
+  if (normal.lengthSq() < 1e-10) return null;
+  normal.normalize();
+
+  const d = AC.length();
+  if (d < 1e-6) return null;
+  const u = AC.clone().multiplyScalar(1 / d);
+  const v = new THREE.Vector3().crossVectors(normal, u).normalize();
+
+  const ax = 0, ay = 0;
+  const bx = d, by = 0;
+  const cx = AB.dot(u), cy = AB.dot(v);
+
+  const D = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  if (Math.abs(D) < 1e-9) return null;
+  const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / D;
+  const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / D;
+
+  const center = P0.clone().add(u.clone().multiplyScalar(ux)).add(v.clone().multiplyScalar(uy));
+  const R = Math.sqrt((ax - ux) ** 2 + (ay - uy) ** 2);
+
+  const angle0 = Math.atan2(ay - uy, ax - ux);
+  const angle1 = Math.atan2(by - uy, bx - ux);
+  const angleV = Math.atan2(cy - uy, cx - ux);
+
+  const TWO_PI = Math.PI * 2;
+  const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
+  const sweepCCW = norm(angle1 - angle0);
+  const deltaV = norm(angleV - angle0);
+  // เลือกทิศทางกวาด (ตามเข็ม/ทวนเข็ม) ที่ทำให้ส่วนโค้งผ่านจุด via จริง
+  const sweep = deltaV <= sweepCCW ? sweepCCW : sweepCCW - TWO_PI;
+
+  return { center, u, v, R, angle0, sweep };
+}
+
+/** arcPoint — สุ่มตำแหน่งบนส่วนโค้งที่พารามิเตอร์ t ∈ [0,1] (0=จุดเริ่ม, 1=จุดจบ) */
+function arcPoint(arc, t) {
+  const angle = arc.angle0 + arc.sweep * t;
+  return arc.center
+    .clone()
+    .add(arc.u.clone().multiplyScalar(arc.R * Math.cos(angle)))
+    .add(arc.v.clone().multiplyScalar(arc.R * Math.sin(angle)));
+}
+
 // ---------------------------------------------------------------------------
 // 3D Arm Scene — โหลดโมเดล GLTF, กล้อง orbit, ลูกศรลาก XYZ ที่ข้อมือ
 // ---------------------------------------------------------------------------
@@ -647,6 +720,15 @@ export default function RoboticArmControl() {
     j5: String(HOME.j5),
   });
 
+  // ---- จุดผ่าน (Via Point) สำหรับโหมด CIRC — ไม่บังคับกรอก ----
+  // ถ้าเว้นว่างไว้ ระบบจะสร้างส่วนโค้งอัตโนมัติ (โก่ง/ป่องออกระหว่างจุดเริ่ม-จบ)
+  const [viaInputs, setViaInputs] = useState({ x: "", y: "", z: "" });
+  const handleViaInputChange = useCallback((axis, value) => {
+    if (value === "" || value === "-" || /^-?\d*\.?\d*$/.test(value)) {
+      setViaInputs((prev) => ({ ...prev, [axis]: value }));
+    }
+  }, []);
+
   // sync ช่องกรอกให้ตรงกับตำแหน่งจริงเสมอ เมื่อ joints เปลี่ยนจากแหล่งอื่น (ลาก IK / ปุ่ม Home)
   useEffect(() => {
     setJointInputs({
@@ -705,7 +787,74 @@ export default function RoboticArmControl() {
     if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
   }, []);
 
-  const handleMovePTP = useCallback(() => {
+  // ---- เคลื่อนที่แบบ LIN/CIRC — สอดแทรกตำแหน่งข้อมือในพิกัดฉาก (Cartesian)
+  // แล้วแปลงกลับเป็นมุมข้อต่อด้วย IK ทุกเฟรม ต่างจาก PTP ที่สอดแทรกมุมข้อต่อโดยตรง ----
+  const animateCartesian = useCallback((targetJoints, motion, duration = 1100) => {
+    return new Promise((resolve) => {
+      if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
+      const startJoints = { ...jointsRef.current };
+      const P0 = fk3(startJoints.j1, startJoints.j2, startJoints.j3);
+      const P1 = fk3(targetJoints.j1, targetJoints.j2, targetJoints.j3);
+
+      let pathFn = (t) => P0.clone().lerp(P1, t); // ค่าเริ่มต้น = เส้นตรง (ใช้กับ LIN เสมอ)
+
+      if (motion === "CIRC") {
+        let viaVec = null;
+        const vx = parseFloat(viaInputs.x);
+        const vy = parseFloat(viaInputs.y);
+        const vz = parseFloat(viaInputs.z);
+        if (Number.isFinite(vx) && Number.isFinite(vy) && Number.isFinite(vz)) {
+          viaVec = new THREE.Vector3(vx, vy, vz);
+        } else {
+          // ไม่ได้กรอกจุดผ่าน — สร้างส่วนโค้งอัตโนมัติโดยโก่งออกด้านข้างจากเส้นตรง
+          const dir = new THREE.Vector3().subVectors(P1, P0);
+          const segLen = dir.length();
+          if (segLen > 1e-6) {
+            dir.normalize();
+            let perp = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0));
+            if (perp.lengthSq() < 1e-6) perp = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(1, 0, 0));
+            perp.normalize();
+            const mid = new THREE.Vector3().addVectors(P0, P1).multiplyScalar(0.5);
+            viaVec = mid.add(perp.multiplyScalar(segLen * 0.25));
+          }
+        }
+        if (viaVec) {
+          const arc = computeArc(P0, P1, viaVec);
+          if (arc) pathFn = (t) => arcPoint(arc, t);
+        }
+      }
+
+      const startTime = performance.now();
+      const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+      setIsMoving(true);
+      function step(now) {
+        const t = Math.min(1, (now - startTime) / duration);
+        const e = easeOutCubic(t);
+        const pos = pathFn(e);
+        const ik = solveIK3(pos.x, pos.y, pos.z);
+        // ถ้าตำแหน่งเกินระยะที่แขนเอื้อมถึง (ik.ok=false) ให้ fallback เป็นการสอดแทรกมุมข้อต่อแทนชั่วคราว
+        const next = {
+          j1: ik.ok ? ik.j1 : startJoints.j1 + (targetJoints.j1 - startJoints.j1) * e,
+          j2: ik.ok ? ik.j2 : startJoints.j2 + (targetJoints.j2 - startJoints.j2) * e,
+          j3: ik.ok ? ik.j3 : startJoints.j3 + (targetJoints.j3 - startJoints.j3) * e,
+          j4: 90,
+          j5: startJoints.j5 + (targetJoints.j5 - startJoints.j5) * e,
+        };
+        jointsRef.current = next;
+        setJoints(next);
+        if (t < 1) {
+          moveAnimRef.current = requestAnimationFrame(step);
+        } else {
+          moveAnimRef.current = null;
+          setIsMoving(false);
+          resolve();
+        }
+      }
+      moveAnimRef.current = requestAnimationFrame(step);
+    });
+  }, [viaInputs]);
+
+  const handleMove = useCallback(() => {
     const parsed = {
       j1: parseFloat(jointInputs.j1),
       j2: parseFloat(jointInputs.j2),
@@ -719,18 +868,22 @@ export default function RoboticArmControl() {
       j4: 90,
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
+    const runMove = motionType === "PTP"
+      ? () => animateToJoints(targetJoints)
+      : () => animateCartesian(targetJoints, motionType);
+
     // บันทึก trail อัตโนมัติระหว่างการเคลื่อนที่
     if (trailControlRef.current) {
       trailControlRef.current.start(motionType);
       setTrailActive(true);
-      animateToJoints(targetJoints).then(() => {
+      runMove().then(() => {
         trailControlRef.current?.stop();
         setTrailActive(false);
       });
     } else {
-      animateToJoints(targetJoints);
+      runMove();
     }
-  }, [jointInputs, animateToJoints, motionType]);
+  }, [jointInputs, animateToJoints, animateCartesian, motionType]);
 
   // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
@@ -1002,6 +1155,32 @@ export default function RoboticArmControl() {
             </div>
           </div>
 
+          {/* Via point — เฉพาะโหมด CIRC เท่านั้น */}
+          {motionType === "CIRC" && (
+            <div>
+              <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
+                VIA POINT (ม., ไม่บังคับ)
+              </div>
+              <div className="flex gap-1.5">
+                {["x", "y", "z"].map((axis) => (
+                  <input
+                    key={axis}
+                    type="text"
+                    inputMode="decimal"
+                    placeholder={axis.toUpperCase()}
+                    value={viaInputs[axis]}
+                    onChange={(e) => handleViaInputChange(axis, e.target.value)}
+                    className="flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs text-center outline-none"
+                    style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
+                  />
+                ))}
+              </div>
+              <div className="text-[9px] mt-1" style={{ color: C.subDim }}>
+                เว้นว่างไว้ = สร้างส่วนโค้งอัตโนมัติผ่านจุดที่ระบุ
+              </div>
+            </div>
+          )}
+
           {/* Joint value inputs */}
           <div className="flex flex-col gap-2">
             {["j1", "j2", "j3", "j4", "j5"].map((key, i) => (
@@ -1029,7 +1208,7 @@ export default function RoboticArmControl() {
 
           {/* Move button */}
           <button
-            onClick={handleMovePTP}
+            onClick={handleMove}
             disabled={!modelReady || isMoving || isPlayingAll}
             className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
             style={{
