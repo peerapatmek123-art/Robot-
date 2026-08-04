@@ -479,6 +479,43 @@ export default function RoboticArmControl() {
     }
   }, []);
 
+  // ---- เคลื่อนที่จริงแบบค่อยๆ ขยับ (ไม่ใช่กระโดดไปทันที) ----
+  const [isMoving, setIsMoving] = useState(false);
+  const moveAnimRef = useRef(null);
+
+  const animateToJoints = useCallback((target, duration = 1100) => {
+    if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
+    const start = { ...jointsRef.current };
+    const startTime = performance.now();
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+    setIsMoving(true);
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const e = easeOutCubic(t);
+      const next = {
+        j1: start.j1 + (target.j1 - start.j1) * e,
+        j2: start.j2 + (target.j2 - start.j2) * e,
+        j3: start.j3 + (target.j3 - start.j3) * e,
+        j4: start.j4 + (target.j4 - start.j4) * e,
+        j5: start.j5 + (target.j5 - start.j5) * e,
+      };
+      jointsRef.current = next;
+      setJoints(next);
+      if (t < 1) {
+        moveAnimRef.current = requestAnimationFrame(step);
+      } else {
+        moveAnimRef.current = null;
+        setIsMoving(false);
+      }
+    }
+    moveAnimRef.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(() => () => {
+    if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
+  }, []);
+
   const handleMovePTP = useCallback(() => {
     const parsed = {
       j1: parseFloat(jointInputs.j1),
@@ -486,16 +523,15 @@ export default function RoboticArmControl() {
       j3: parseFloat(jointInputs.j3),
       j5: parseFloat(jointInputs.j5),
     };
-    const newJoints = {
+    const targetJoints = {
       j1: Number.isFinite(parsed.j1) ? parsed.j1 : jointsRef.current.j1,
       j2: Number.isFinite(parsed.j2) ? parsed.j2 : jointsRef.current.j2,
       j3: Number.isFinite(parsed.j3) ? parsed.j3 : jointsRef.current.j3,
       j4: 90, // J4 เป็นค่าคงตัว ไม่เปลี่ยนแปลง
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
-    jointsRef.current = newJoints;
-    setJoints(newJoints);
-  }, [jointInputs]);
+    animateToJoints(targetJoints);
+  }, [jointInputs, animateToJoints]);
 
   // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
@@ -516,9 +552,8 @@ export default function RoboticArmControl() {
   }, []);
 
   const handleGoToPose = useCallback((pose) => {
-    jointsRef.current = pose.joints;
-    setJoints(pose.joints);
-  }, []);
+    animateToJoints(pose.joints);
+  }, [animateToJoints]);
 
   const handleDeletePose = useCallback((id) => {
     setSavedPoses((prev) => prev.filter((p) => p.id !== id));
@@ -543,8 +578,8 @@ export default function RoboticArmControl() {
         next.j2 = moveToward(cur.j2, 0, step);
         next.j3 = moveToward(cur.j3, 0, step);
       } else {
-        // ลากลง — หมุนไปตามทิศที่ลาก
-        const step = delta * DEG_PER_UNIT;
+        // ลากลง — มุมต้องเพิ่มไปทางบวก
+        const step = Math.abs(delta) * DEG_PER_UNIT;
         next.j2 = clampDeg(cur.j2 + step, -90, 90);
         next.j3 = clampDeg(cur.j3 + step, -135, 135);
       }
@@ -561,11 +596,10 @@ export default function RoboticArmControl() {
   const viewerRef = useRef(null);
   const { modelReady, modelError } = useArmScene(viewerRef, joints, handleIkDrag);
 
-  // ---- ปุ่ม Home: กลับตำแหน่งเริ่มต้นทันที ----
+  // ---- ปุ่ม Home: เคลื่อนที่กลับตำแหน่งเริ่มต้นแบบค่อยๆ ขยับ ----
   const handleHome = useCallback(() => {
-    setJoints(HOME);
-    jointsRef.current = HOME;
-  }, []);
+    animateToJoints(HOME);
+  }, [animateToJoints]);
 
   const refreshPorts = useCallback(async () => {
     if (!window.electronAPI?.listPorts) return;
@@ -619,15 +653,15 @@ export default function RoboticArmControl() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleHome}
-            disabled={!modelReady}
+            disabled={!modelReady || isMoving}
             title="กลับตำแหน่งเริ่มต้น (Home)"
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors"
             style={{
               background: C.panelAlt,
-              color: !modelReady ? C.subDim : C.text,
+              color: !modelReady || isMoving ? C.subDim : C.text,
               border: `1px solid ${C.borderSoft}`,
-              cursor: !modelReady ? "default" : "pointer",
-              opacity: !modelReady ? 0.6 : 1,
+              cursor: !modelReady || isMoving ? "default" : "pointer",
+              opacity: !modelReady || isMoving ? 0.6 : 1,
             }}
           >
             <HomeIcon size={13} />
@@ -750,16 +784,16 @@ export default function RoboticArmControl() {
           {/* Move button */}
           <button
             onClick={handleMovePTP}
-            disabled={!modelReady}
+            disabled={!modelReady || isMoving}
             className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
             style={{
-              background: !modelReady ? C.panelAlt : C.accent,
-              color: !modelReady ? C.subDim : "#fff",
-              cursor: !modelReady ? "default" : "pointer",
+              background: !modelReady || isMoving ? C.panelAlt : C.accent,
+              color: !modelReady || isMoving ? C.subDim : "#fff",
+              cursor: !modelReady || isMoving ? "default" : "pointer",
             }}
           >
             <Move size={14} />
-            {`Move (${motionType})`}
+            {isMoving ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
           </button>
 
           {/* Save current pose */}
@@ -797,10 +831,10 @@ export default function RoboticArmControl() {
                     </span>
                     <button
                       onClick={() => handleGoToPose(pose)}
-                      disabled={!modelReady}
+                      disabled={!modelReady || isMoving}
                       title="ไปยังท่านี้"
                       className="p-1 rounded-md transition-colors"
-                      style={{ background: C.accentSoft, color: C.accent }}
+                      style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving ? 0.5 : 1 }}
                     >
                       <Play size={11} />
                     </button>
