@@ -500,8 +500,9 @@ export default function RoboticArmControl() {
 
   // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
-  // แกน Y: J2 และ J3 เคลื่อนที่เข้าหา 0 องศา ตามระยะที่ลาก (ไม่สนทิศทาง)
-  // แกน Z: J2 และ J3 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
+  // แกน Y: ลากขึ้น (delta บวก) → J2/J3 เคลื่อนที่เข้าหา 0 องศา
+  //         ลากลง (delta ลบ) → J2/J3 หมุนไปตามทิศที่ลาก (เหมือนแกน Z)
+  // แกน Z: J2/J3/J4 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
   const DEG_PER_UNIT = 400; // ความไว: องศาต่อระยะลาก 1 หน่วย (เมตร) — ปรับได้ตรงนี้
 
   const handleIkDrag = useCallback((axis, delta) => {
@@ -517,13 +518,22 @@ export default function RoboticArmControl() {
     if (axis === "x") {
       next.j1 = clampDeg(cur.j1 + delta * DEG_PER_UNIT, -180, 180);
     } else if (axis === "y") {
-      const step = Math.abs(delta) * DEG_PER_UNIT;
-      next.j2 = moveToward(cur.j2, 0, step);
-      next.j3 = moveToward(cur.j3, 0, step);
+      if (delta > 0) {
+        // ลากขึ้น — เข้าหา 0 องศา
+        const step = delta * DEG_PER_UNIT;
+        next.j2 = moveToward(cur.j2, 0, step);
+        next.j3 = moveToward(cur.j3, 0, step);
+      } else {
+        // ลากลง — หมุนไปตามทิศที่ลาก
+        const step = delta * DEG_PER_UNIT;
+        next.j2 = clampDeg(cur.j2 + step, -90, 90);
+        next.j3 = clampDeg(cur.j3 + step, -135, 135);
+      }
     } else if (axis === "z") {
       const step = delta * DEG_PER_UNIT;
       next.j2 = clampDeg(cur.j2 + step, -90, 90);
       next.j3 = clampDeg(cur.j3 + step, -135, 135);
+      next.j4 = clampDeg(cur.j4 + step, -180, 180);
     }
 
     jointsRef.current = next;
@@ -638,9 +648,9 @@ export default function RoboticArmControl() {
         </div>
       </div>
 
-      {/* ---------------- 3D Robot Arm Viewer + Control Panel ---------------- */}
-      <div className="flex-1 min-h-0 p-4 flex gap-4">
-        <div className="flex-1 min-w-0 rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      {/* ---------------- 3D Robot Arm Viewer + Control Panel (floating overlay) ---------------- */}
+      <div className="flex-1 min-h-0 p-4 relative">
+        <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
           <div ref={viewerRef} className="w-full h-full" />
           {!modelReady && !modelError && (
             <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
@@ -654,10 +664,16 @@ export default function RoboticArmControl() {
           )}
         </div>
 
-        {/* ---------------- Kinematic Move Panel ---------------- */}
+        {/* ---------------- Kinematic Move Panel (floating glass card) ---------------- */}
         <div
-          className="w-[300px] shrink-0 rounded-2xl p-4 flex flex-col gap-4"
-          style={{ background: C.panel, border: `1px solid ${C.border}` }}
+          className="absolute top-8 right-8 w-[300px] rounded-2xl p-4 flex flex-col gap-4"
+          style={{
+            background: "rgba(16,21,42,0.72)",
+            border: `1px solid ${C.border}`,
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
+          }}
         >
           {/* Header: title */}
           <div className="flex items-center gap-2">
