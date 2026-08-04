@@ -1,19 +1,10 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
 import {
-  Bot,
-  Wifi,
-  ChevronDown,
-  Home as HomeIcon,
-  Move,
-  Save,
-  Trash2,
-  Play,
-  Activity,
-  RotateCcw,
-  BookOpen,
+  Bot, Wifi, ChevronDown, Home as HomeIcon, Move, Save, Trash2,
+  Play, Pause, Repeat, Activity, RotateCcw, BookOpen,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -37,7 +28,6 @@ const C = {
 
 // ---------------------------------------------------------------------------
 // Robot arm link lengths (เมตร) — ใช้แค่ J1 (ฐาน) / J2 (ไหล่) / J3 (ข้อศอก)
-// ยังไม่คำนวณ J4/J5 ในเวอร์ชันนี้ (ตัดออกตามที่ขอ ให้เหลือแค่ลากแขนแบบง่ายก่อน)
 // ---------------------------------------------------------------------------
 const L1 = 0.10; // ความสูงไหล่จากพื้น (m)
 const L2 = 0.105; // แขนบน ไหล่-ข้อศอก (m)
@@ -45,11 +35,7 @@ const L3 = 0.096; // แขนล่าง ข้อศอก-ข้อมือ
 
 const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
 
-/**
- * solveIK3 — Inverse Kinematics แบบง่าย (2-link planar + ฐานหมุน) หา J1/J2/J3
- * จากตำแหน่งเป้าหมาย (x,y,z) ของ "ข้อมือ" (ปลาย L3, จุดหมุน J4) โดยตรง
- * ไม่หักระยะปลายมือคีบ (L4) และไม่คำนวณ J4 ให้อยู่แนวระดับ — เก็บ J4/J5 ไว้ตามเดิม
- */
+/** solveIK3 — Inverse Kinematics แบบง่าย (2-link planar + ฐานหมุน) หา J1/J2/J3 */
 function solveIK3(x, y, z) {
   const j1 = THREE.MathUtils.radToDeg(Math.atan2(x, z));
   const r = Math.sqrt(x * x + z * z);
@@ -77,11 +63,7 @@ function solveIK3(x, y, z) {
   };
 }
 
-/**
- * fk3 — Forward Kinematics คู่กับ solveIK3 (สมการผกผันของกันและกัน)
- * รับมุมข้อต่อ J1/J2/J3 (องศา) คืนตำแหน่ง (x,y,z) ของข้อมือในพิกัดฉาก
- * ใช้สำหรับคำนวณเส้นทางแบบ LIN/CIRC ในพิกัดฉาก ก่อนแปลงกลับเป็นมุมข้อต่อด้วย solveIK3
- */
+/** fk3 — Forward Kinematics คู่กับ solveIK3 */
 function fk3(j1Deg, j2Deg, j3Deg) {
   const j1 = THREE.MathUtils.degToRad(j1Deg);
   const j2 = THREE.MathUtils.degToRad(j2Deg);
@@ -98,11 +80,7 @@ function fk3(j1Deg, j2Deg, j3Deg) {
   return new THREE.Vector3(x, y, z);
 }
 
-/**
- * computeArc — หาวงกลมที่ผ่าน 3 จุด (P0 → Pv → P1) ในพิกัด 3 มิติ
- * คืนพารามิเตอร์ของส่วนโค้ง (จุดศูนย์กลาง, แกนอ้างอิงในระนาบ, รัศมี, มุมเริ่ม, มุมกวาด)
- * หรือ null ถ้าจุดทั้ง 3 อยู่แนวเดียวกัน (คำนวณวงกลมไม่ได้)
- */
+/** computeArc — หาวงกลมที่ผ่าน 3 จุด (P0 → Pv → P1) ในพิกัด 3 มิติ */
 function computeArc(P0, P1, Pv) {
   const AC = new THREE.Vector3().subVectors(P1, P0);
   const AB = new THREE.Vector3().subVectors(Pv, P0);
@@ -135,13 +113,11 @@ function computeArc(P0, P1, Pv) {
   const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
   const sweepCCW = norm(angle1 - angle0);
   const deltaV = norm(angleV - angle0);
-  // เลือกทิศทางกวาด (ตามเข็ม/ทวนเข็ม) ที่ทำให้ส่วนโค้งผ่านจุด via จริง
   const sweep = deltaV <= sweepCCW ? sweepCCW : sweepCCW - TWO_PI;
 
   return { center, u, v, R, angle0, sweep };
 }
 
-/** arcPoint — สุ่มตำแหน่งบนส่วนโค้งที่พารามิเตอร์ t ∈ [0,1] (0=จุดเริ่ม, 1=จุดจบ) */
 function arcPoint(arc, t) {
   const angle = arc.angle0 + arc.sweep * t;
   return arc.center
@@ -166,7 +142,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
 
     const scene = new THREE.Scene();
 
-    // พื้นหลังไล่สี (เข้มด้านบน อ่อนลงด้านล่างเล็กน้อย)
     const bgGeo = new THREE.SphereGeometry(28, 24, 16);
     const bgPos = bgGeo.attributes.position;
     const topCol = new THREE.Color(0x060810);
@@ -223,7 +198,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     scene.add(grid);
     scene.add(new THREE.AxesHelper(0.55));
 
-    // ---- กล้อง orbit ----
     const controls = {
       azimuth: Math.PI * 0.28,
       elevation: 0.5,
@@ -255,7 +229,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
-    // ---- ลากลูกศร (raycast) ----
     const raycaster = new THREE.Raycaster();
     const pointerNDC = new THREE.Vector2();
     const AXIS_VECTORS = {
@@ -368,16 +341,13 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
       ready: false,
     };
 
-    // ---- Trail system — วาดเส้น 3D ตามการเคลื่อนที่ปลายมือ ----
     const MAX_TRAIL_POINTS = 4000;
     const trailPositions = new Float32Array(MAX_TRAIL_POINTS * 3);
     const trailColors = new Float32Array(MAX_TRAIL_POINTS * 3);
     let trailCount = 0;
-    let trailRecording = false;
     let lastTrailPos = null;
-    const MIN_DIST = 0.004; // ระยะขั้นต่ำระหว่างจุด (เมตร)
+    const MIN_DIST = 0.004;
 
-    // สร้าง geometry แบบ dynamic draw
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
     trailGeo.setAttribute("color", new THREE.BufferAttribute(trailColors, 3));
@@ -394,23 +364,21 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     trailLine.renderOrder = 10;
     scene.add(trailLine);
 
-    // ---- จุดวาย (waypoint dots) — sphere เล็กๆ แต่ละ segment ----
     const waypointDots = [];
 
     function addTrailPoint(pos, motionType) {
       if (trailCount >= MAX_TRAIL_POINTS) return;
       const i = trailCount * 3;
-      trailPositions[i]     = pos.x;
+      trailPositions[i] = pos.x;
       trailPositions[i + 1] = pos.y;
       trailPositions[i + 2] = pos.z;
 
-      // สีตาม motion type
       const col = motionType === "LIN"
         ? new THREE.Color(0x22c55e)
         : motionType === "CIRC"
         ? new THREE.Color(0xf59e0b)
-        : new THREE.Color(0x3b6cf6); // PTP default
-      trailColors[i]     = col.r;
+        : new THREE.Color(0x3b6cf6);
+      trailColors[i] = col.r;
       trailColors[i + 1] = col.g;
       trailColors[i + 2] = col.b;
 
@@ -425,7 +393,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
       lastTrailPos = null;
       trailGeo.setDrawRange(0, 0);
       trailGeo.attributes.position.needsUpdate = true;
-      // ลบ waypoint dots
       waypointDots.forEach((d) => scene.remove(d));
       waypointDots.length = 0;
     }
@@ -441,28 +408,16 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
       waypointDots.push(dot);
     }
 
-    // expose ผ่าน ref ที่ส่งมาจากภายนอก
+    const trailState = { recording: false, motionType: "PTP" };
     if (trailControlRef) {
       trailControlRef.current = {
-        start: (motionType) => {
-          trailRecording = true;
-          // เพิ่มจุดเริ่มต้นแยก segment ถ้ามี trail อยู่แล้ว
-          if (trailCount > 0 && lastTrailPos) {
-            addWaypointDot(lastTrailPos, motionType);
-          }
-        },
-        stop: () => {
-          trailRecording = false;
-          if (lastTrailPos) addWaypointDot(lastTrailPos, "PTP");
-        },
+        start: (mt) => { trailState.recording = true; trailState.motionType = mt || "PTP"; if (trailCount > 0 && lastTrailPos) addWaypointDot(lastTrailPos, mt); },
+        stop: () => { trailState.recording = false; if (lastTrailPos) addWaypointDot(lastTrailPos, "PTP"); },
         clear: clearTrail,
         getCount: () => trailCount,
-        setMotionType: (mt) => { if (trailControlRef.current) trailControlRef.current._motionType = mt; },
-        _motionType: "PTP",
       };
     }
 
-    // ---- Minimap — renderer ขนาดเล็ก top-view มุมบนซ้าย ----
     const MINI_SIZE = 180;
     const miniRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     miniRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -484,7 +439,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     miniCamera.position.set(0, 8, 0);
     miniCamera.lookAt(0, 0, 0);
 
-    // Mini-scene แสดงเฉพาะ grid + trail (ไม่โหลดโมเดลซ้ำ)
     const miniScene = new THREE.Scene();
     const miniGrid = new THREE.GridHelper(0.7, 14, 0x2c3766, 0x1c2340);
     miniGrid.material.opacity = 0.7;
@@ -492,7 +446,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     miniScene.add(miniGrid);
     miniScene.add(new THREE.AxesHelper(0.12));
 
-    // Trail line copy ใน mini scene — share geometry เดียวกัน
     const miniTrailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
@@ -501,39 +454,11 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     miniTrailLine.frustumCulled = false;
     miniScene.add(miniTrailLine);
 
-    // Current position dot ใน minimap
     const curDotGeo = new THREE.CircleGeometry(0.012, 10);
     const curDotMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
     const curDot = new THREE.Mesh(curDotGeo, curDotMat);
     curDot.rotation.x = -Math.PI / 2;
     miniScene.add(curDot);
-
-    // Label "PATH" บน minimap (canvas texture)
-    function makeLabelCanvas(text) {
-      const c = document.createElement("canvas");
-      c.width = 100; c.height = 24;
-      const cx2 = c.getContext("2d");
-      cx2.fillStyle = "rgba(0,0,0,0)";
-      cx2.fillRect(0, 0, c.width, c.height);
-      cx2.fillStyle = "#7480a3";
-      cx2.font = "bold 11px monospace";
-      cx2.fillText(text, 4, 16);
-      return new THREE.CanvasTexture(c);
-    }
-
-    // ---- ใน tick() อัปเดต trail และ minimap ----
-    // เก็บ ref ไว้ใช้ใน tick
-    const trailState = { recording: false, motionType: "PTP" };
-    if (trailControlRef) {
-      const orig = trailControlRef.current;
-      trailControlRef.current = {
-        ...orig,
-        start: (mt) => { trailState.recording = true; trailState.motionType = mt || "PTP"; if (trailCount > 0 && lastTrailPos) addWaypointDot(lastTrailPos, mt); },
-        stop: () => { trailState.recording = false; if (lastTrailPos) addWaypointDot(lastTrailPos, "PTP"); },
-        clear: clearTrail,
-        getCount: () => trailCount,
-      };
-    }
 
     const GIZMO_REF_DISTANCE = controls.radius;
     const _wristWorld = new THREE.Vector3();
@@ -558,25 +483,19 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
           }
           s.gizmo.position.copy(_wristWorld);
 
-          // ---- Trail sampling ----
           if (trailState.recording) {
             if (!lastTrailPos || _wristWorld.distanceTo(lastTrailPos) >= MIN_DIST) {
               addTrailPoint(_wristWorld, trailState.motionType);
               lastTrailPos = _wristWorld.clone();
             }
           }
-
-          // อัปเดต current position dot ใน minimap
           curDot.position.set(_wristWorld.x, 0.001, _wristWorld.z);
         }
         const camDist = camera.position.distanceTo(s.gizmo.position);
         s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
       }
       renderer.render(scene, camera);
-
-      // ---- Render minimap ----
       miniRenderer.render(miniScene, miniCamera);
-
       raf = requestAnimationFrame(tick);
     }
     tick();
@@ -626,7 +545,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
         }
       });
 
-      // ---- ลูกศร XYZ (แดง/เขียว/น้ำเงิน) ลากที่ข้อมือ ไม่ผูกกับหมุนของข้อต่อ ----
       const gizmoLen = 0.24;
       const HIT_PADDING = 2.0;
       function makeArrow(dir, color, axis) {
@@ -690,7 +608,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- อัปเดตมุมข้อต่อจริงบนโมเดลทุกครั้งที่ joints เปลี่ยน (J1/J2/J3 เท่านั้น) ----
   useEffect(() => {
     const s = sceneRef.current;
     if (!s || !s.ready) return;
@@ -698,7 +615,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     s.baseGroup.rotation.y = d(joints.j1);
     s.shoulder.rotation.x = d(-joints.j2);
     s.elbow.rotation.y = d(-joints.j3);
-    // J4/J5 คงค่าตามที่โหลดมา (ยังไม่คำนวณในเวอร์ชันนี้)
     s.wrist.rotation.y = d(-joints.j4);
     s.baseGroup.updateMatrixWorld(true);
   }, [joints]);
@@ -707,36 +623,33 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar — แถบไอคอนซ้ายมือ สลับหน้า "ควบคุมแขนกล" (บ้าน) / "เรียนรู้" (หนังสือ)
-// ตามโครงร่างที่แนบมา
+// Left icon rail — navigation between "Home" (control) and "Learn" pages
 // ---------------------------------------------------------------------------
-function Sidebar({ view, onChange }) {
+function IconRail({ page, setPage }) {
   const items = [
-    { id: "control", label: "ควบคุมแขนกล", Icon: HomeIcon },
-    { id: "learn", label: "เรียนรู้ Motion", Icon: BookOpen },
+    { id: "control", icon: HomeIcon, title: "แผงควบคุม" },
+    { id: "learn", icon: BookOpen, title: "เรียนรู้ Motion" },
   ];
   return (
     <div
       className="flex flex-col items-center gap-2 py-4 shrink-0"
-      style={{ width: 60, background: C.panel, borderRight: `1px solid ${C.border}` }}
+      style={{ width: 56, background: C.panel, borderRight: `1px solid ${C.border}` }}
     >
-      {items.map(({ id, label, Icon }) => {
-        const active = view === id;
+      {items.map(({ id, icon: Icon, title }) => {
+        const active = page === id;
         return (
           <button
             key={id}
-            onClick={() => onChange(id)}
-            title={label}
-            className="flex items-center justify-center rounded-xl transition-colors"
+            onClick={() => setPage(id)}
+            title={title}
+            className="w-10 h-10 rounded-xl flex items-center justify-center transition-colors"
             style={{
-              width: 40,
-              height: 40,
               background: active ? C.accentSoft : "transparent",
               color: active ? C.accent : C.subDim,
               border: `1px solid ${active ? C.accent + "55" : "transparent"}`,
             }}
           >
-            <Icon size={19} />
+            <Icon size={18} />
           </button>
         );
       })}
@@ -745,236 +658,297 @@ function Sidebar({ view, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
-// LearnView — หน้าเรียนรู้ 2 มิติ: อธิบายชนิดการเคลื่อนที่ PTP / LIN / CIRC
-// พร้อมสูตรคำนวณ (IK / FK) และไดอะแกรมแขนกล 2 ข้อต่อแบบ SVG
+// J1–J5 value bar — spans the top of the viewer, mirrors the wireframe header
 // ---------------------------------------------------------------------------
-function ArmDiagram2D({ mode }) {
-  // พิกัดฐานอ้างอิงของภาพ SVG (หน่วย px ในระบบพิกัดของ viewBox)
-  const originX = 120, originY = 260;
-  const scale = 620; // px ต่อเมตร (เพื่อให้แขนยาว ~0.2m แสดงผลได้ชัดเจน)
-
-  // ท่าเริ่มต้นและท่าเป้าหมาย (องศา) ใช้ประกอบคำอธิบายแต่ละโหมด
-  const startJ = { j2: -20, j3: 100 };
-  const endJ = { j2: 35, j3: 55 };
-
-  const toXY = (j2Deg, j3Deg) => {
-    const p = fk3(0, j2Deg, j3Deg); // j1 = 0 เพื่อดูในระนาบ x-y (มองด้านข้าง)
-    return { x: originX + p.z * scale, y: originY - p.y * scale };
-  };
-
-  const shoulder = { x: originX, y: originY - L1 * scale };
-  const startElbowAngle = THREE.MathUtils.degToRad(startJ.j2);
-  const startElbow = {
-    x: shoulder.x + L2 * scale * Math.cos(startElbowAngle),
-    y: shoulder.y - L2 * scale * Math.sin(startElbowAngle),
-  };
-  const startWrist = toXY(startJ.j2, startJ.j3);
-
-  const endElbowAngle = THREE.MathUtils.degToRad(endJ.j2);
-  const endElbow = {
-    x: shoulder.x + L2 * scale * Math.cos(endElbowAngle),
-    y: shoulder.y - L2 * scale * Math.sin(endElbowAngle),
-  };
-  const endWrist = toXY(endJ.j2, endJ.j3);
-
-  // เส้นทางตัวอย่างสำหรับแต่ละโหมด (สีตามที่ใช้จริงในหน้าควบคุม)
-  const pathColor = mode === "LIN" ? C.green : mode === "CIRC" ? C.amber : C.accent;
-
-  let pathD = "";
-  if (mode === "PTP") {
-    // PTP: สอดแทรกมุมข้อต่อ → ปลายมือเคลื่อนที่เป็นเส้นโค้งอิสระ ไม่ใช่เส้นตรง
-    const pts = [];
-    for (let i = 0; i <= 24; i++) {
-      const t = i / 24;
-      const j2 = startJ.j2 + (endJ.j2 - startJ.j2) * t;
-      const j3 = startJ.j3 + (endJ.j3 - startJ.j3) * t;
-      pts.push(toXY(j2, j3));
-    }
-    pathD = "M " + pts.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L ");
-  } else if (mode === "LIN") {
-    // LIN: เส้นตรงในพิกัดฉากระหว่างจุดเริ่มและจุดจบ
-    pathD = `M ${startWrist.x} ${startWrist.y} L ${endWrist.x} ${endWrist.y}`;
-  } else {
-    // CIRC: ส่วนโค้งผ่านจุด via ที่โก่งออกจากเส้นตรงกลาง
-    const midX = (startWrist.x + endWrist.x) / 2;
-    const midY = (startWrist.y + endWrist.y) / 2 - 46;
-    pathD = `M ${startWrist.x} ${startWrist.y} Q ${midX} ${midY} ${endWrist.x} ${endWrist.y}`;
-  }
-
+function JointValueBar({ joints }) {
+  const rows = [
+    ["J1", joints.j1, "°"],
+    ["J2", joints.j2, "°"],
+    ["J3", joints.j3, "°"],
+    ["J4", joints.j4, "°"],
+    ["J5", joints.j5, "%"],
+  ];
   return (
-    <svg viewBox="0 0 400 300" className="w-full h-full">
-      <line x1="20" y1={originY} x2="380" y2={originY} stroke={C.borderSoft} strokeWidth="1" />
-      <text x="24" y={originY - 6} fontSize="9" fill={C.subDim} fontFamily="monospace">พื้น (y = 0)</text>
+    <div
+      className="flex items-center shrink-0"
+      style={{ background: C.panelAlt, borderBottom: `1px solid ${C.border}` }}
+    >
+      {rows.map(([label, val, unit]) => (
+        <div key={label} className="flex-1 flex items-baseline justify-center gap-1.5 py-2.5" style={{ borderRight: `1px solid ${C.borderSoft}` }}>
+          <span className="text-[11px] font-semibold" style={{ color: C.subDim }}>{label}</span>
+          <span className="text-[13px] font-mono font-semibold" style={{ color: C.text }}>
+            {typeof val === "number" ? val.toFixed(1) : val}{unit}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-      {/* เส้นทางเป้าหมาย */}
-      <path d={pathD} fill="none" stroke={pathColor} strokeWidth="2.5" strokeDasharray={mode === "PTP" ? "0" : "5 4"} opacity="0.9" />
+// ---------------------------------------------------------------------------
+// LEARN PAGE — แขนกล 2D สำหรับสอนเรื่อง Motion: PTP / LIN / CIRC + สูตรคำนวณ
+// ---------------------------------------------------------------------------
+const LEARN_L1 = 90; // px, ความยาวแขนบน (สเกลสำหรับวาด 2D เท่านั้น)
+const LEARN_L2 = 80; // px, ความยาวแขนล่าง
+const LEARN_ORIGIN = { x: 170, y: 230 };
 
-      {/* ท่าเริ่มต้น (จาง) */}
-      <g opacity="0.35">
-        <line x1={shoulder.x} y1={shoulder.y} x2={startElbow.x} y2={startElbow.y} stroke={C.sub} strokeWidth="6" strokeLinecap="round" />
-        <line x1={startElbow.x} y1={startElbow.y} x2={startWrist.x} y2={startWrist.y} stroke={C.sub} strokeWidth="6" strokeLinecap="round" />
-      </g>
+function learnFk(theta1Deg, theta2Deg) {
+  const t1 = THREE.MathUtils.degToRad(theta1Deg);
+  const t2 = THREE.MathUtils.degToRad(theta2Deg);
+  const elbow = {
+    x: LEARN_ORIGIN.x + LEARN_L1 * Math.cos(t1),
+    y: LEARN_ORIGIN.y - LEARN_L1 * Math.sin(t1),
+  };
+  const wrist = {
+    x: elbow.x + LEARN_L2 * Math.cos(t1 + t2),
+    y: elbow.y - LEARN_L2 * Math.sin(t1 + t2),
+  };
+  return { elbow, wrist };
+}
 
-      {/* ท่าปลายทาง (เข้ม) */}
-      <g>
-        <line x1={shoulder.x} y1={shoulder.y} x2={endElbow.x} y2={endElbow.y} stroke={C.text} strokeWidth="7" strokeLinecap="round" />
-        <line x1={endElbow.x} y1={endElbow.y} x2={endWrist.x} y2={endWrist.y} stroke={C.text} strokeWidth="7" strokeLinecap="round" />
-        <circle cx={shoulder.x} cy={shoulder.y} r="6" fill={C.accent} />
-        <circle cx={endElbow.x} cy={endElbow.y} r="5" fill={C.accent} />
-      </g>
+function learnIk(x, y) {
+  const dx = x - LEARN_ORIGIN.x;
+  const dy = LEARN_ORIGIN.y - y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const distClamped = THREE.MathUtils.clamp(dist, Math.abs(LEARN_L1 - LEARN_L2) + 1, LEARN_L1 + LEARN_L2 - 1);
+  const cosT2 = (distClamped * distClamped - LEARN_L1 * LEARN_L1 - LEARN_L2 * LEARN_L2) / (2 * LEARN_L1 * LEARN_L2);
+  const t2 = Math.acos(THREE.MathUtils.clamp(cosT2, -1, 1));
+  const k1 = LEARN_L1 + LEARN_L2 * Math.cos(t2);
+  const k2 = LEARN_L2 * Math.sin(t2);
+  const t1 = Math.atan2(dy, dx) - Math.atan2(k2, k1);
+  return {
+    theta1: THREE.MathUtils.radToDeg(t1),
+    theta2: THREE.MathUtils.radToDeg(t2),
+  };
+}
 
-      {/* จุดเริ่ม / จุดจบ ของปลายมือ */}
-      <circle cx={startWrist.x} cy={startWrist.y} r="5" fill="none" stroke={pathColor} strokeWidth="2" />
-      <circle cx={endWrist.x} cy={endWrist.y} r="5.5" fill={pathColor} />
-      <text x={startWrist.x - 10} y={startWrist.y + 20} fontSize="9" fill={C.subDim} fontFamily="monospace">P0</text>
-      <text x={endWrist.x + 8} y={endWrist.y - 8} fontSize="9" fill={pathColor} fontFamily="monospace">P1</text>
+const LEARN_POSE_A = { theta1: 40, theta2: 70 };
+const LEARN_POSE_B = { theta1: 130, theta2: -60 };
+const LEARN_VIA = { x: LEARN_ORIGIN.x, y: LEARN_ORIGIN.y - (LEARN_L1 + LEARN_L2) * 0.72 };
+
+const MOTION_INFO = {
+  PTP: {
+    color: C.accent,
+    name: "PTP — Point to Point",
+    tagline: "สอดแทรกในปริภูมิข้อต่อ (Joint Space)",
+    desc: "แต่ละข้อต่อ (θ1, θ2) เคลื่อนที่จากมุมเริ่มต้นไปยังมุมเป้าหมายพร้อมกันแบบเชิงเส้น โดยไม่สนใจว่าปลายแขนจะเคลื่อนที่เป็นเส้นทางแบบใด ทำให้เร็วและประหยัดพลังงานที่สุด แต่เส้นทางของปลายแขนจะโค้งงอ ไม่ใช่เส้นตรง",
+    formula: "θᵢ(t) = θᵢ₀ + (θᵢ₁ − θᵢ₀) · t,   t ∈ [0,1]",
+    note: "ใช้กับทุกข้อต่อพร้อมกัน (i = 1..n) — นี่คือสูตรง่ายที่สุดเพราะไม่ต้องคำนวณ IK ระหว่างทางเลย",
+  },
+  LIN: {
+    color: C.green,
+    name: "LIN — Linear",
+    tagline: "สอดแทรกในปริภูมิคาร์ทีเซียน (Cartesian Space)",
+    desc: "ปลายแขนถูกบังคับให้เคลื่อนที่เป็นเส้นตรงจากจุดเริ่มต้น P0 ไปยังจุดปลาย P1 เสมอ โดยคำนวณตำแหน่ง P(t) ก่อน แล้วจึงแปลงกลับเป็นมุมข้อต่อด้วย Inverse Kinematics (IK) ทุกเฟรม — ใช้ในงานที่ต้องการความแม่นยำของเส้นทาง เช่น การเชื่อมหรือตัดวัสดุ",
+    formula: "P(t) = P0 + (P1 − P0) · t   แล้วแก้ IK: cos θ2 = (d² − L1² − L2²) / (2 L1 L2)",
+    note: "d = ระยะจากฐานถึง P(t), L1/L2 = ความยาวท่อนแขน — มุม θ1 หาได้จาก atan2 ของตำแหน่งและมุม θ2",
+  },
+  CIRC: {
+    color: C.amber,
+    name: "CIRC — Circular",
+    tagline: "สอดแทรกตามส่วนโค้งของวงกลมผ่าน 3 จุด",
+    desc: "กำหนดจุดเริ่ม P0, จุดผ่าน (via point) Pv และจุดปลาย P1 ระบบจะหาวงกลมที่ลากผ่านทั้ง 3 จุดนี้ได้พอดี แล้วสอดแทรกตำแหน่งไปตามส่วนโค้งนั้น ก่อนแปลงกลับเป็นมุมข้อต่อด้วย IK เช่นเดียวกับ LIN — ใช้เมื่อต้องการเลี่ยงสิ่งกีดขวางด้วยเส้นทางโค้ง",
+    formula: "หาศูนย์กลางวงกลม C และรัศมี R จาก P0,P1,Pv  →  P(t) = C + R·(cos φ(t), sin φ(t))",
+    note: "φ(t) กวาดมุมจาก φ0 ไป φ0+Δφ ตามทิศที่ผ่าน Pv จริง (เลือกทิศตามเข็ม/ทวนเข็มโดยอัตโนมัติ)",
+  },
+};
+
+function Learn2DArm({ pose, trail, motionType }) {
+  const { elbow, wrist } = learnFk(pose.theta1, pose.theta2);
+  const info = MOTION_INFO[motionType];
+  return (
+    <svg viewBox="0 0 340 260" className="w-full h-full">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <line key={"v" + i} x1={i * 42} y1={0} x2={i * 42} y2={260} stroke={C.borderSoft} strokeWidth={1} />
+      ))}
+      {Array.from({ length: 6 }).map((_, i) => (
+        <line key={"h" + i} x1={0} y1={i * 45} x2={340} y2={i * 45} stroke={C.borderSoft} strokeWidth={1} />
+      ))}
+
+      {trail.length > 1 && (
+        <polyline
+          points={trail.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke={info.color}
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          opacity={0.85}
+        />
+      )}
+
+      {motionType === "CIRC" && (
+        <g>
+          <circle cx={LEARN_VIA.x} cy={LEARN_VIA.y} r={4} fill={C.amber} />
+          <text x={LEARN_VIA.x + 8} y={LEARN_VIA.y - 6} fontSize="9" fill={C.amber} fontFamily="monospace">via</text>
+        </g>
+      )}
+
+      {[LEARN_POSE_A, LEARN_POSE_B].map((p, i) => {
+        const { wrist: w } = learnFk(p.theta1, p.theta2);
+        return <circle key={i} cx={w.x} cy={w.y} r={3} fill={C.subDim} />;
+      })}
+
+      <circle cx={LEARN_ORIGIN.x} cy={LEARN_ORIGIN.y} r={7} fill={C.panelAlt} stroke={C.border} strokeWidth={2} />
+      <line x1={LEARN_ORIGIN.x} y1={LEARN_ORIGIN.y} x2={elbow.x} y2={elbow.y} stroke={C.text} strokeWidth={6} strokeLinecap="round" />
+      <line x1={elbow.x} y1={elbow.y} x2={wrist.x} y2={wrist.y} stroke={C.sub} strokeWidth={6} strokeLinecap="round" />
+      <circle cx={elbow.x} cy={elbow.y} r={5} fill={C.accent} />
+      <circle cx={wrist.x} cy={wrist.y} r={6} fill={info.color} stroke={C.bg} strokeWidth={2} />
     </svg>
   );
 }
 
-const MOTION_INFO = {
-  PTP: {
-    title: "PTP — Point to Point",
-    color: C.accent,
-    summary:
-      "สอดแทรกค่า \"มุมข้อต่อ\" (Joint Space) แต่ละแกนจากท่าเริ่มต้นไปยังท่าเป้าหมายโดยตรง ปลายมือจึงไม่เคลื่อนที่เป็นเส้นตรง แต่เป็นเส้นโค้งที่เกิดจากการหมุนพร้อมกันของทุกข้อต่อ — เร็วและใช้ง่ายที่สุด เหมาะกับงานที่ไม่สนใจรูปร่างเส้นทาง เช่น หยิบ-วาง",
-    formula: [
-      "θ(t) = θ₀ + (θ₁ − θ₀) · e(t)",
-      "โดย θ₀, θ₁ คือมุมเริ่มต้น/เป้าหมายของแต่ละข้อต่อ (J1..J5)",
-      "e(t) = 1 − (1 − t)³   (ease-out cubic), t ∈ [0,1]",
-    ],
-    steps: [
-      "รับค่ามุมเป้าหมาย J1–J5 จากผู้ใช้",
-      "สอดแทรกมุมแต่ละแกนอิสระตามเวลา t",
-      "ส่งมุมที่ได้เข้าโมเดลโดยตรง ไม่ต้องคำนวณ IK",
-    ],
-  },
-  LIN: {
-    title: "LIN — Linear (เส้นตรง)",
-    color: C.green,
-    summary:
-      "สอดแทรกตำแหน่ง \"พิกัดฉาก\" (Cartesian: x, y, z) ของปลายมือให้เคลื่อนที่เป็นเส้นตรงจาก P0 ไป P1 แล้วแปลงกลับเป็นมุมข้อต่อด้วย Inverse Kinematics (IK) ทุกเฟรม — ใช้เมื่อเส้นทางต้องแม่นยำ เช่น การเชื่อม/วาดเส้นตรง",
-    formula: [
-      "P(t) = P0 + (P1 − P0) · e(t)",
-      "[θ1, θ2, θ3] = IK( P(t) )   ← แก้ระบบสมการตรีโกณจากตำแหน่ง x,y,z",
-      "cos θ3 = (d² − L2² − L3²) / (2·L2·L3),   d = |P(t) − ไหล่|",
-    ],
-    steps: [
-      "หาตำแหน่งปลายมือปัจจุบัน P0 ด้วย Forward Kinematics",
-      "สอดแทรกจุดบนเส้นตรงระหว่าง P0 กับ P1 ตามเวลา t",
-      "แปลงแต่ละจุดกลับเป็นมุมข้อต่อด้วย IK แล้วขยับหุ่นยนต์",
-    ],
-  },
-  CIRC: {
-    title: "CIRC — Circular (ส่วนโค้ง)",
-    color: C.amber,
-    summary:
-      "หาวงกลมที่ลากผ่าน 3 จุด: จุดเริ่ม (P0), จุดผ่าน/Via (Pv) และจุดจบ (P1) แล้วสอดแทรกมุมไปตามเส้นรอบวงนั้น ก่อนแปลงกลับเป็นมุมข้อต่อด้วย IK เช่นเดียวกับ LIN — ถ้าไม่ระบุจุด Via ระบบจะสร้างจุดโก่งอัตโนมัติจากกึ่งกลางเส้นตรง",
-    formula: [
-      "หาศูนย์กลางวงกลม (ux, uy) จากสมการตัดกันของเส้นแบ่งครึ่งตั้งฉาก 2 เส้น",
-      "R = ระยะจากศูนย์กลางถึง P0",
-      "P(t) = center + R·[cos(θ0+Δθ·t), sin(θ0+Δθ·t)]   ตามระนาบที่ผ่าน 3 จุด",
-    ],
-    steps: [
-      "รับจุด Via (หรือคำนวณอัตโนมัติถ้าไม่ระบุ)",
-      "หาวงกลมที่ผ่าน P0 → Pv → P1 พร้อมทิศทางกวาดที่ถูกต้อง",
-      "สอดแทรกตำแหน่งบนส่วนโค้งแล้วแปลงเป็นมุมข้อต่อด้วย IK ทุกเฟรม",
-    ],
-  },
-};
+function LearnPage() {
+  const [motionType, setMotionType] = useState("PTP");
+  const [pose, setPose] = useState(LEARN_POSE_A);
+  const [trail, setTrail] = useState([]);
+  const [playing, setPlaying] = useState(false);
+  const animRef = useRef(null);
 
-function LearnView() {
-  const [mode, setMode] = useState("PTP");
-  const info = MOTION_INFO[mode];
+  const runDemo = useCallback(() => {
+    if (playing) return;
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    setTrail([]);
+    setPlaying(true);
+
+    const start = LEARN_POSE_A;
+    const end = LEARN_POSE_B;
+    const P0 = learnFk(start.theta1, start.theta2).wrist;
+    const P1 = learnFk(end.theta1, end.theta2).wrist;
+
+    let pathFn;
+    if (motionType === "PTP") {
+      pathFn = null;
+    } else if (motionType === "LIN") {
+      pathFn = (t) => ({ x: P0.x + (P1.x - P0.x) * t, y: P0.y + (P1.y - P0.y) * t });
+    } else {
+      const arc2D = (() => {
+        const ax = P0.x, ay = P0.y, bx = LEARN_VIA.x, by = LEARN_VIA.y, cx = P1.x, cy = P1.y;
+        const D = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+        const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / D;
+        const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / D;
+        const R = Math.hypot(ax - ux, ay - uy);
+        const a0 = Math.atan2(ay - uy, ax - ux);
+        const a1 = Math.atan2(cy - uy, cx - ux);
+        const av = Math.atan2(by - uy, bx - ux);
+        const TWO_PI = Math.PI * 2;
+        const norm = (a) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
+        const sweepCCW = norm(a1 - a0);
+        const deltaV = norm(av - a0);
+        const sweep = deltaV <= sweepCCW ? sweepCCW : sweepCCW - TWO_PI;
+        return { ux, uy, R, a0, sweep };
+      })();
+      pathFn = (t) => {
+        const ang = arc2D.a0 + arc2D.sweep * t;
+        return { x: arc2D.ux + arc2D.R * Math.cos(ang), y: arc2D.uy + arc2D.R * Math.sin(ang) };
+      };
+    }
+
+    const duration = motionType === "PTP" ? 1000 : motionType === "LIN" ? 1500 : 1400;
+    const startTime = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      const e = ease(t);
+      let nextPose, wristPos;
+      if (motionType === "PTP") {
+        nextPose = {
+          theta1: start.theta1 + (end.theta1 - start.theta1) * e,
+          theta2: start.theta2 + (end.theta2 - start.theta2) * e,
+        };
+        wristPos = learnFk(nextPose.theta1, nextPose.theta2).wrist;
+      } else {
+        wristPos = pathFn(e);
+        nextPose = learnIk(wristPos.x, wristPos.y);
+      }
+      setPose(nextPose);
+      setTrail((prev) => (prev.length && Math.hypot(prev[prev.length - 1].x - wristPos.x, prev[prev.length - 1].y - wristPos.y) < 1 ? prev : [...prev, wristPos]));
+      if (t < 1) {
+        animRef.current = requestAnimationFrame(step);
+      } else {
+        animRef.current = null;
+        setPlaying(false);
+      }
+    }
+    animRef.current = requestAnimationFrame(step);
+  }, [motionType, playing]);
+
+  useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
+
+  const info = MOTION_INFO[motionType];
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-6" style={{ background: C.bg }}>
       <div className="max-w-5xl mx-auto flex flex-col gap-5">
         <div>
-          <div className="text-[11px] font-semibold tracking-widest mb-1" style={{ color: C.subDim }}>
-            แขนกล 2D · เรียนรู้เรื่อง MOTION
+          <div className="flex items-center gap-2 mb-1">
+            <BookOpen size={16} color={C.accent} />
+            <span className="text-[15px] font-semibold" style={{ color: C.text }}>เรียนรู้ Motion: PTP / LIN / CIRC</span>
           </div>
-          <h1 className="text-xl font-semibold" style={{ color: C.text }}>
-            ทำความเข้าใจการเคลื่อนที่แบบ PTP / LIN / CIRC
-          </h1>
-          <p className="text-xs mt-1" style={{ color: C.sub }}>
-            ให้ความรู้และสูตรการคำนวณเบื้องหลังการเคลื่อนที่แต่ละแบบของแขนกล 2 ข้อต่อ (ไหล่–ข้อศอก)
+          <p className="text-xs" style={{ color: C.sub }}>
+            แขนกลจำลอง 2 ข้อต่อแบบระนาบ (2D) สำหรับสาธิตความแตกต่างของการสอดแทรกเส้นทางแต่ละแบบ พร้อมสูตรคำนวณประกอบ
           </p>
         </div>
 
-        {/* ตัวเลือกโหมด */}
-        <div className="flex gap-2">
-          {Object.keys(MOTION_INFO).map((key) => {
-            const active = mode === key;
-            const c = MOTION_INFO[key].color;
-            return (
-              <button
-                key={key}
-                onClick={() => setMode(key)}
-                className="px-4 py-1.5 rounded-full text-xs font-semibold transition-colors"
-                style={{
-                  background: active ? c : C.panelAlt,
-                  color: active ? "#08101f" : C.sub,
-                  border: `1px solid ${active ? c : C.borderSoft}`,
-                }}
-              >
-                {key}
-              </button>
-            );
-          })}
-        </div>
-
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* ไดอะแกรม 2D */}
-          <div className="rounded-2xl p-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-            <div className="text-[10px] font-semibold tracking-wide mb-2" style={{ color: C.subDim }}>
-              ไดอะแกรม 2 มิติ (มองด้านข้าง)
+          <div className="rounded-2xl p-4 flex flex-col gap-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex gap-1.5">
+              {["PTP", "LIN", "CIRC"].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => { setMotionType(t); setTrail([]); setPose(LEARN_POSE_A); }}
+                  disabled={playing}
+                  className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                  style={{
+                    background: motionType === t ? MOTION_INFO[t].color : C.panelAlt,
+                    color: motionType === t ? "#fff" : C.sub,
+                    border: `1px solid ${motionType === t ? MOTION_INFO[t].color : C.borderSoft}`,
+                    opacity: playing && motionType !== t ? 0.5 : 1,
+                  }}
+                >
+                  {t}
+                </button>
+              ))}
             </div>
-            <div className="rounded-xl" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, aspectRatio: "4 / 3" }}>
-              <ArmDiagram2D mode={mode} />
+            <div className="rounded-xl overflow-hidden" style={{ background: C.panelAlt, aspectRatio: "340/260" }}>
+              <Learn2DArm pose={pose} trail={trail} motionType={motionType} />
             </div>
-            <div className="flex items-center gap-4 mt-3 text-[10px]" style={{ color: C.subDim }}>
-              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: info.color }} />เส้นทางปลายมือ (P0 → P1)</span>
-            </div>
+            <button
+              onClick={runDemo}
+              disabled={playing}
+              className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
+              style={{
+                background: playing ? C.panelAlt : info.color,
+                color: playing ? C.subDim : "#fff",
+                cursor: playing ? "default" : "pointer",
+              }}
+            >
+              <Play size={14} />
+              {playing ? "กำลังสาธิต..." : `สาธิตการเคลื่อนที่แบบ ${motionType}`}
+            </button>
           </div>
 
-          {/* คำอธิบาย + สูตร */}
-          <div className="rounded-2xl p-4 flex flex-col gap-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-            <div>
-              <div className="text-sm font-semibold mb-1" style={{ color: info.color }}>{info.title}</div>
-              <p className="text-xs leading-relaxed" style={{ color: C.sub }}>{info.summary}</p>
+          <div className="rounded-2xl p-5 flex flex-col gap-3" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: info.color }} />
+              <span className="text-sm font-semibold" style={{ color: C.text }}>{info.name}</span>
+            </div>
+            <span className="text-[11px] font-medium" style={{ color: info.color }}>{info.tagline}</span>
+            <p className="text-xs leading-relaxed" style={{ color: C.sub }}>{info.desc}</p>
+
+            <div className="rounded-xl p-3 mt-1" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
+              <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>สูตรคำนวณ</div>
+              <div className="text-[13px] font-mono" style={{ color: C.text }}>{info.formula}</div>
+              <div className="text-[10px] mt-2 leading-relaxed" style={{ color: C.subDim }}>{info.note}</div>
             </div>
 
-            <div>
-              <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
-                สูตรการคำนวณ
-              </div>
-              <div className="rounded-xl p-3 flex flex-col gap-1.5" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
-                {info.formula.map((line, i) => (
-                  <div key={i} className="text-[11px]" style={{ color: C.text, fontFamily: "monospace" }}>
-                    {line}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
-                ขั้นตอนการทำงาน
-              </div>
-              <ol className="flex flex-col gap-1.5">
-                {info.steps.map((s, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs" style={{ color: C.text }}>
-                    <span
-                      className="shrink-0 flex items-center justify-center rounded-full text-[10px] font-semibold"
-                      style={{ width: 16, height: 16, background: C.accentSoft, color: C.accent, marginTop: 1 }}
-                    >
-                      {i + 1}
-                    </span>
-                    {s}
-                  </li>
-                ))}
-              </ol>
+            <div className="grid grid-cols-3 gap-2 mt-1">
+              {Object.entries(MOTION_INFO).map(([key, m]) => (
+                <div key={key} className="rounded-lg px-2.5 py-2 text-center" style={{ background: C.panelAlt, border: `1px solid ${key === motionType ? m.color : C.borderSoft}` }}>
+                  <div className="w-1.5 h-1.5 rounded-full mx-auto mb-1" style={{ background: m.color }} />
+                  <div className="text-[10px] font-semibold" style={{ color: C.text }}>{key}</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -984,18 +958,221 @@ function LearnView() {
 }
 
 // ---------------------------------------------------------------------------
+// CONTROL PAGE — reorganized per wireframe:
+// Home button → Motion type → Motion Trail toggle → play/loop/pause → pose list
+// ---------------------------------------------------------------------------
+function ControlPanel({
+  modelReady, isMoving, isPlayingAll, handleHome,
+  motionType, setMotionType,
+  viaInputs, handleViaInputChange,
+  jointInputs, handleJointInputChange, handleMove,
+  trailActive, trailControlRef, setTrailActive, setTrailCount,
+  savedPoses, handleSavePose, handleGoToPose, handleDeletePose, handlePlayAll,
+}) {
+  return (
+    <div
+      className="w-[280px] shrink-0 flex flex-col gap-4 p-4 overflow-y-auto"
+      style={{ background: C.panel, borderRight: `1px solid ${C.border}` }}
+    >
+      <button
+        onClick={handleHome}
+        disabled={!modelReady || isMoving || isPlayingAll}
+        className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
+        style={{
+          background: !modelReady || isMoving || isPlayingAll ? C.panelAlt : C.accentSoft,
+          color: !modelReady || isMoving || isPlayingAll ? C.subDim : C.accent,
+          border: `1px solid ${C.borderSoft}`,
+          cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
+        }}
+      >
+        <HomeIcon size={14} />
+        Home
+      </button>
+
+      <div>
+        <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>MOTION</div>
+        <div className="flex gap-1.5">
+          {["PTP", "LIN", "CIRC"].map((t) => (
+            <button
+              key={t}
+              onClick={() => setMotionType(t)}
+              className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                background: motionType === t ? C.accent : C.panelAlt,
+                color: motionType === t ? "#fff" : C.sub,
+                border: `1px solid ${motionType === t ? C.accent : C.borderSoft}`,
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {motionType === "CIRC" && (
+        <div>
+          <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>VIA POINT (ม., ไม่บังคับ)</div>
+          <div className="flex gap-1.5">
+            {["x", "y", "z"].map((axis) => (
+              <input
+                key={axis}
+                type="text"
+                inputMode="decimal"
+                placeholder={axis.toUpperCase()}
+                value={viaInputs[axis]}
+                onChange={(e) => handleViaInputChange(axis, e.target.value)}
+                className="flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs text-center outline-none"
+                style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>MOTION TRAIL</span>
+        <button
+          onClick={() => {
+            if (!trailControlRef.current || !modelReady) return;
+            if (trailActive) {
+              trailControlRef.current.stop();
+              setTrailActive(false);
+            } else {
+              trailControlRef.current.start(motionType);
+              setTrailActive(true);
+            }
+          }}
+          disabled={!modelReady}
+          className="relative rounded-full transition-colors"
+          style={{ width: 40, height: 22, background: trailActive ? C.green : C.borderSoft, opacity: !modelReady ? 0.5 : 1 }}
+        >
+          <span
+            className="absolute top-[3px] rounded-full transition-all"
+            style={{ width: 16, height: 16, background: "#fff", left: trailActive ? 21 : 3 }}
+          />
+        </button>
+      </div>
+
+      <div className="flex items-center justify-center gap-3 py-1">
+        <button
+          onClick={handlePlayAll}
+          disabled={!modelReady || isMoving || isPlayingAll || savedPoses.length === 0}
+          title="เล่นท่าทางทั้งหมดตามลำดับ"
+          className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving || isPlayingAll || savedPoses.length === 0 ? 0.4 : 1 }}
+        >
+          <Play size={15} />
+        </button>
+        <button
+          onClick={() => { trailControlRef.current?.clear(); setTrailCount(0); setTrailActive(false); }}
+          disabled={!modelReady}
+          title="วนซ้ำ / ล้างเส้นทาง"
+          className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}`, opacity: !modelReady ? 0.5 : 1 }}
+        >
+          <Repeat size={14} />
+        </button>
+        <button
+          disabled
+          title="หยุดชั่วคราว"
+          className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ background: C.panelAlt, color: C.subDim, border: `1px solid ${C.borderSoft}`, opacity: 0.5 }}
+        >
+          <Pause size={14} />
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>POSE</div>
+        <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto pr-0.5">
+          {savedPoses.length === 0 && (
+            <div className="text-[11px] text-center py-3" style={{ color: C.subDim }}>ยังไม่มีท่าทางที่บันทึกไว้</div>
+          )}
+          {savedPoses.map((pose) => (
+            <div key={pose.id} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}>
+              <span className="flex-1 min-w-0 truncate text-xs" style={{ color: C.text }}>{pose.name}</span>
+              <button
+                onClick={() => handleGoToPose(pose)}
+                disabled={!modelReady || isMoving || isPlayingAll}
+                title="ไปยังท่านี้"
+                className="p-1 rounded-md transition-colors"
+                style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1 }}
+              >
+                <Play size={11} />
+              </button>
+              <button
+                onClick={() => handleDeletePose(pose.id)}
+                disabled={isPlayingAll}
+                title="ลบท่านี้"
+                className="p-1 rounded-md transition-colors"
+                style={{ background: "rgba(239,68,68,0.12)", color: C.red, opacity: isPlayingAll ? 0.5 : 1 }}
+              >
+                <Trash2 size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={handleSavePose}
+          disabled={!modelReady || isPlayingAll}
+          className="flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-colors mt-1"
+          style={{
+            background: C.panelAlt,
+            border: `1px solid ${C.borderSoft}`,
+            color: !modelReady || isPlayingAll ? C.subDim : C.text,
+            opacity: !modelReady || isPlayingAll ? 0.6 : 1,
+          }}
+        >
+          <Save size={13} />
+          บันทึกท่าทางปัจจุบัน
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-2 pt-2" style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+        <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>MOVE TO JOINTS</div>
+        {["j1", "j2", "j3", "j4", "j5"].map((key, i) => (
+          <div key={key} className="flex items-center justify-between gap-2">
+            <span className="text-xs shrink-0" style={{ color: C.sub }}>{`J${i + 1} (${key === "j5" ? "%" : "°"})`}</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={key === "j4" ? "90" : jointInputs[key]}
+              onChange={(e) => handleJointInputChange(key, e.target.value)}
+              disabled={key === "j4"}
+              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs text-right outline-none"
+              style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: key === "j4" ? C.subDim : C.text, opacity: key === "j4" ? 0.6 : 1 }}
+            />
+          </div>
+        ))}
+        <button
+          onClick={handleMove}
+          disabled={!modelReady || isMoving || isPlayingAll}
+          className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors mt-1"
+          style={{
+            background: !modelReady || isMoving || isPlayingAll ? C.panelAlt : C.accent,
+            color: !modelReady || isMoving || isPlayingAll ? C.subDim : "#fff",
+            cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
+          }}
+        >
+          <Move size={14} />
+          {isMoving && !isPlayingAll ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 export default function RoboticArmControl() {
-  // ---- หน้าที่กำลังแสดง: ควบคุมแขนกล (control) หรือ เรียนรู้ (learn) ----
-  const [view, setView] = useState("control");
+  const [page, setPage] = useState("control"); // "control" | "learn"
 
   const [ports, setPorts] = useState(["COM3"]);
   const [selectedPort, setSelectedPort] = useState("COM3");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
-  // Trail recording controls
   const trailControlRef = useRef(null);
   const [trailActive, setTrailActive] = useState(false);
   const [trailCount, setTrailCount] = useState(0);
@@ -1004,18 +1181,11 @@ export default function RoboticArmControl() {
   const jointsRef = useRef(HOME);
   useEffect(() => { jointsRef.current = joints; }, [joints]);
 
-  // ---- แผงควบคุม "Kinematic Move" ----
-  const [motionType, setMotionType] = useState("PTP"); // "PTP" | "LIN" | "CIRC"
+  const [motionType, setMotionType] = useState("PTP");
   const [jointInputs, setJointInputs] = useState({
-    j1: String(HOME.j1),
-    j2: String(HOME.j2),
-    j3: String(HOME.j3),
-    j4: String(HOME.j4),
-    j5: String(HOME.j5),
+    j1: String(HOME.j1), j2: String(HOME.j2), j3: String(HOME.j3), j4: String(HOME.j4), j5: String(HOME.j5),
   });
 
-  // ---- จุดผ่าน (Via Point) สำหรับโหมด CIRC — ไม่บังคับกรอก ----
-  // ถ้าเว้นว่างไว้ ระบบจะสร้างส่วนโค้งอัตโนมัติ (โก่ง/ป่องออกระหว่างจุดเริ่ม-จบ)
   const [viaInputs, setViaInputs] = useState({ x: "", y: "", z: "" });
   const handleViaInputChange = useCallback((axis, value) => {
     if (value === "" || value === "-" || /^-?\d*\.?\d*$/.test(value)) {
@@ -1023,7 +1193,6 @@ export default function RoboticArmControl() {
     }
   }, []);
 
-  // sync ช่องกรอกให้ตรงกับตำแหน่งจริงเสมอ เมื่อ joints เปลี่ยนจากแหล่งอื่น (ลาก IK / ปุ่ม Home)
   useEffect(() => {
     setJointInputs({
       j1: String(joints.j1.toFixed ? joints.j1.toFixed(2) : joints.j1),
@@ -1035,13 +1204,11 @@ export default function RoboticArmControl() {
   }, [joints]);
 
   const handleJointInputChange = useCallback((key, value) => {
-    // อนุญาตให้พิมพ์ค่าติดลบ/จุดทศนิยม/ช่องว่างระหว่างพิมพ์ได้อย่างอิสระ
     if (value === "" || value === "-" || /^-?\d*\.?\d*$/.test(value)) {
       setJointInputs((prev) => ({ ...prev, [key]: value }));
     }
   }, []);
 
-  // ---- เคลื่อนที่จริงแบบค่อยๆ ขยับ (ไม่ใช่กระโดดไปทันที) ----
   const [isMoving, setIsMoving] = useState(false);
   const moveAnimRef = useRef(null);
 
@@ -1077,12 +1244,8 @@ export default function RoboticArmControl() {
     });
   }, []);
 
-  useEffect(() => () => {
-    if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
-  }, []);
+  useEffect(() => () => { if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current); }, []);
 
-  // ---- เคลื่อนที่แบบ LIN/CIRC — สอดแทรกตำแหน่งข้อมือในพิกัดฉาก (Cartesian)
-  // แล้วแปลงกลับเป็นมุมข้อต่อด้วย IK ทุกเฟรม ต่างจาก PTP ที่สอดแทรกมุมข้อต่อโดยตรง ----
   const animateCartesian = useCallback((targetJoints, motion, duration = 1100) => {
     return new Promise((resolve) => {
       if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
@@ -1090,7 +1253,7 @@ export default function RoboticArmControl() {
       const P0 = fk3(startJoints.j1, startJoints.j2, startJoints.j3);
       const P1 = fk3(targetJoints.j1, targetJoints.j2, targetJoints.j3);
 
-      let pathFn = (t) => P0.clone().lerp(P1, t); // ค่าเริ่มต้น = เส้นตรง (ใช้กับ LIN เสมอ)
+      let pathFn = (t) => P0.clone().lerp(P1, t);
 
       if (motion === "CIRC") {
         let viaVec = null;
@@ -1100,7 +1263,6 @@ export default function RoboticArmControl() {
         if (Number.isFinite(vx) && Number.isFinite(vy) && Number.isFinite(vz)) {
           viaVec = new THREE.Vector3(vx, vy, vz);
         } else {
-          // ไม่ได้กรอกจุดผ่าน — สร้างส่วนโค้งอัตโนมัติโดยโก่งออกด้านข้างจากเส้นตรง
           const dir = new THREE.Vector3().subVectors(P1, P0);
           const segLen = dir.length();
           if (segLen > 1e-6) {
@@ -1126,7 +1288,6 @@ export default function RoboticArmControl() {
         const e = easeOutCubic(t);
         const pos = pathFn(e);
         const ik = solveIK3(pos.x, pos.y, pos.z);
-        // ถ้าตำแหน่งเกินระยะที่แขนเอื้อมถึง (ik.ok=false) ให้ fallback เป็นการสอดแทรกมุมข้อต่อแทนชั่วคราว
         const next = {
           j1: ik.ok ? ik.j1 : startJoints.j1 + (targetJoints.j1 - startJoints.j1) * e,
           j2: ik.ok ? ik.j2 : startJoints.j2 + (targetJoints.j2 - startJoints.j2) * e,
@@ -1148,11 +1309,8 @@ export default function RoboticArmControl() {
     });
   }, [viaInputs]);
 
-  // ---- ระยะเวลาการเคลื่อนที่ต่อโหมด — LIN/CIRC ช้ากว่า PTP เพราะต้องคุมเส้นทางให้ตรง/โค้งแม่นยำ ----
   const MOVE_DURATION = { PTP: 900, LIN: 1500, CIRC: 1300 };
 
-  // ---- runMotion — จุดเดียวที่ใช้เคลื่อนที่ไปยัง target joints ใดๆ โดยเลือกวิธีคำนวณ
-  // ตาม motion ที่ระบุ (PTP = joint space, LIN/CIRC = Cartesian) พร้อมบันทึก trail ----
   const runMotion = useCallback((targetJoints, motion) => {
     const duration = MOVE_DURATION[motion] ?? 1100;
     const doMove = motion === "PTP"
@@ -1187,29 +1345,16 @@ export default function RoboticArmControl() {
     runMotion(targetJoints, motionType);
   }, [jointInputs, runMotion, motionType]);
 
-  // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
-  // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
-  // แกน Y: ลากขึ้น (delta บวก) → J2/J3 เคลื่อนที่เข้าหา 0 องศา
-  //         ลากลง (delta ลบ) → J2/J3 หมุนไปตามทิศที่ลาก (เหมือนแกน Z)
-  // แกน Z: J2/J3 หมุนออกจาก 0 องศา ไปทางทิศที่ลาก (ลากบวก → มุมเพิ่ม, ลากลบ → มุมลด)
-  // J4 เป็นค่าคงตัวที่ 90 องศาเสมอ ไม่ถูกควบคุมโดยการลากแกนใดๆ
-  const DEG_PER_UNIT = 400; // ความไว: องศาต่อระยะลาก 1 หน่วย (เมตร) — ปรับได้ตรงนี้
+  const DEG_PER_UNIT = 400;
 
-  // ---- บันทึกท่าทาง (Saved Poses) ----
-  const [savedPoses, setSavedPoses] = useState([]); // [{ id, name, joints }]
+  const [savedPoses, setSavedPoses] = useState([]);
 
   const handleSavePose = useCallback(() => {
-    setSavedPoses((prev) => [
-      ...prev,
-      { id: Date.now(), name: `ท่าที่ ${prev.length + 1}`, joints: { ...jointsRef.current } },
-    ]);
+    setSavedPoses((prev) => [...prev, { id: Date.now(), name: `ท่าที่ ${prev.length + 1}`, joints: { ...jointsRef.current } }]);
   }, []);
 
-  const handleGoToPose = useCallback((pose) => {
-    runMotion(pose.joints, motionType);
-  }, [runMotion, motionType]);
+  const handleGoToPose = useCallback((pose) => { runMotion(pose.joints, motionType); }, [runMotion, motionType]);
 
-  // ---- เล่นท่าทางทั้งหมดต่อเนื่องกัน — เริ่มจากตำแหน่งเริ่มต้น (HOME) เองโดยไม่ต้องกด Home ก่อน ----
   const [isPlayingAll, setIsPlayingAll] = useState(false);
 
   const handlePlayAll = useCallback(async () => {
@@ -1240,12 +1385,10 @@ export default function RoboticArmControl() {
       next.j1 = clampDeg(cur.j1 + delta * DEG_PER_UNIT, -180, 180);
     } else if (axis === "y") {
       if (delta > 0) {
-        // ลากขึ้น — J2/J3 เข้าหา 0 องศา
         const step = delta * DEG_PER_UNIT;
         next.j2 = moveToward(cur.j2, 0, step);
         next.j3 = moveToward(cur.j3, 0, step);
       } else {
-        // ลากลง — J2 ไปทางลบ, J3 ไปทางบวก
         const step = Math.abs(delta) * DEG_PER_UNIT;
         next.j2 = clampDeg(cur.j2 - step, -90, 90);
         next.j3 = clampDeg(cur.j3 + step, -135, 135);
@@ -1263,10 +1406,7 @@ export default function RoboticArmControl() {
   const viewerRef = useRef(null);
   const { modelReady, modelError } = useArmScene(viewerRef, joints, handleIkDrag, trailControlRef);
 
-  // ---- ปุ่ม Home: เคลื่อนที่กลับตำแหน่งเริ่มต้นแบบค่อยๆ ขยับ ----
-  const handleHome = useCallback(() => {
-    animateToJoints(HOME);
-  }, [animateToJoints]);
+  const handleHome = useCallback(() => { animateToJoints(HOME); }, [animateToJoints]);
 
   const refreshPorts = useCallback(async () => {
     if (!window.electronAPI?.listPorts) return;
@@ -1305,371 +1445,104 @@ export default function RoboticArmControl() {
 
   return (
     <div
-      className="w-full h-full min-h-screen flex"
+      className="w-full h-full min-h-screen flex flex-col"
       style={{ background: C.bg, fontFamily: "'IBM Plex Sans Thai', 'Inter', sans-serif" }}
     >
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
 
-      {/* ---------------- Sidebar (Home / Learn) ---------------- */}
-      <Sidebar view={view} onChange={setView} />
-
-      {/* ---------------- Content column ---------------- */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        {/* ---------------- Header ---------------- */}
-        <div className="flex items-center justify-between px-5 py-3 shrink-0" style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.accentSoft }}>
-                <Bot size={18} color={C.accent} />
-              </div>
-              <span className="text-[15px] font-semibold" style={{ color: C.text }}>ANR Robot Studio</span>
-            </div>
+      <div className="flex items-center justify-between px-5 py-3 shrink-0" style={{ background: C.panel, borderBottom: `1px solid ${C.border}` }}>
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: C.accentSoft }}>
+            <Bot size={18} color={C.accent} />
           </div>
-
-          <div className="flex items-center gap-3">
-            {view === "control" && (
-              <button
-                onClick={handleHome}
-                disabled={!modelReady || isMoving || isPlayingAll}
-                title="กลับตำแหน่งเริ่มต้น (Home)"
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors"
-                style={{
-                  background: C.panelAlt,
-                  color: !modelReady || isMoving || isPlayingAll ? C.subDim : C.text,
-                  border: `1px solid ${C.borderSoft}`,
-                  cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
-                  opacity: !modelReady || isMoving || isPlayingAll ? 0.6 : 1,
-                }}
-              >
-                <HomeIcon size={13} />
-                Home
-              </button>
-            )}
-
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs relative" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}>
-              <Wifi size={13} color={C.sub} />
-              <select
-                value={selectedPort}
-                onChange={(e) => setSelectedPort(e.target.value)}
-                className="bg-transparent outline-none appearance-none pr-4"
-                style={{ color: C.text }}
-              >
-                {ports.map((p) => (
-                  <option key={p} value={p} style={{ background: C.panel }}>{p}</option>
-                ))}
-              </select>
-              <ChevronDown size={13} color={C.subDim} className="pointer-events-none absolute right-2.5" />
-            </div>
-
-            <button
-              onClick={handleConnect}
-              disabled={connected || connecting || !selectedPort}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium transition-colors"
-              style={{
-                background: connected ? "rgba(34,197,94,0.12)" : C.accent,
-                color: connected ? C.green : "#fff",
-                opacity: connecting ? 0.7 : 1,
-                cursor: connected || connecting || !selectedPort ? "default" : "pointer",
-              }}
-            >
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? C.green : "#fff" }} />
-              {connecting ? "กำลังเชื่อมต่อ..." : connected ? "เชื่อมต่อแล้ว" : "Connect"}
-            </button>
-          </div>
+          <span className="text-[15px] font-semibold" style={{ color: C.text }}>ANR Robot Studio</span>
         </div>
 
-        {view === "learn" ? (
-          <LearnView />
-        ) : (
-          /* ---------------- 3D Robot Arm Viewer + Control Panel (floating overlay) ---------------- */
-          <div className="flex-1 min-h-0 p-4 relative">
-            <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-              <div ref={viewerRef} className="w-full h-full" />
-              {!modelReady && !modelError && (
-                <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
-                  กำลังโหลดโมเดล 3D...
-                </div>
-              )}
-              {modelError && (
-                <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.red }}>
-                  โหลดโมเดล 3D ไม่สำเร็จ
-                </div>
-              )}
-
-              {/* Minimap label overlay — HTML on top of Three.js minimap canvas at top-left */}
-              {modelReady && (
-                <div
-                  className="absolute pointer-events-none"
-                  style={{ top: 16, left: 16, width: 180, height: 180, zIndex: 25 }}
-                >
-                  {/* Title bar at bottom of minimap */}
-                  <div
-                    className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2.5 py-1.5 rounded-b-xl"
-                    style={{
-                      background: "rgba(10,14,26,0.88)",
-                      borderTop: `1px solid rgba(28,35,64,0.8)`,
-                    }}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Activity size={9} color={C.accent} />
-                      <span style={{ fontSize: 9, fontFamily: "monospace", color: C.sub, fontWeight: 600, letterSpacing: "0.05em" }}>
-                        PATH VIEW
-                      </span>
-                    </div>
-                    {trailActive && (
-                      <div className="flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}`, animation: "pulse 1s infinite" }} />
-                        <span style={{ fontSize: 8, color: C.red, fontFamily: "monospace" }}>REC</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* ---------------- Kinematic Move Panel (floating glass card) ---------------- */}
-            <div
-              className="absolute top-8 right-8 w-[300px] rounded-2xl p-4 flex flex-col gap-4"
-              style={{
-                background: "rgba(16,21,42,0.72)",
-                border: `1px solid ${C.border}`,
-                backdropFilter: "blur(14px)",
-                WebkitBackdropFilter: "blur(14px)",
-                boxShadow: "0 12px 32px rgba(0,0,0,0.45)",
-              }}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs relative" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}>
+            <Wifi size={13} color={C.sub} />
+            <select
+              value={selectedPort}
+              onChange={(e) => setSelectedPort(e.target.value)}
+              className="bg-transparent outline-none appearance-none pr-4"
+              style={{ color: C.text }}
             >
-              {/* Header: title */}
-              <div className="flex items-center gap-2">
-                <Move size={15} color={C.accent} />
-                <span className="text-[13px] font-semibold" style={{ color: C.text }}>Kinematic Move</span>
-              </div>
+              {ports.map((p) => (<option key={p} value={p} style={{ background: C.panel }}>{p}</option>))}
+            </select>
+            <ChevronDown size={13} color={C.subDim} className="pointer-events-none absolute right-2.5" />
+          </div>
 
-              {/* Motion type */}
-              <div>
-                <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
-                  MOTION TYPE
-                </div>
-                <div className="flex gap-1.5">
-                  {["PTP", "LIN", "CIRC"].map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setMotionType(t)}
-                      className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                      style={{
-                        background: motionType === t ? C.accent : C.panelAlt,
-                        color: motionType === t ? "#fff" : C.sub,
-                        border: `1px solid ${motionType === t ? C.accent : C.borderSoft}`,
-                      }}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
+          <button
+            onClick={handleConnect}
+            disabled={connected || connecting || !selectedPort}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium transition-colors"
+            style={{
+              background: connected ? "rgba(34,197,94,0.12)" : C.accent,
+              color: connected ? C.green : "#fff",
+              opacity: connecting ? 0.7 : 1,
+              cursor: connected || connecting || !selectedPort ? "default" : "pointer",
+            }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? C.green : "#fff" }} />
+            {connecting ? "กำลังเชื่อมต่อ..." : connected ? "เชื่อมต่อแล้ว" : "Connect"}
+          </button>
+        </div>
+      </div>
 
-              {/* Via point — เฉพาะโหมด CIRC เท่านั้น */}
-              {motionType === "CIRC" && (
-                <div>
-                  <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>
-                    VIA POINT (ม., ไม่บังคับ)
-                  </div>
-                  <div className="flex gap-1.5">
-                    {["x", "y", "z"].map((axis) => (
-                      <input
-                        key={axis}
-                        type="text"
-                        inputMode="decimal"
-                        placeholder={axis.toUpperCase()}
-                        value={viaInputs[axis]}
-                        onChange={(e) => handleViaInputChange(axis, e.target.value)}
-                        className="flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs text-center outline-none"
-                        style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
-                      />
-                    ))}
-                  </div>
-                  <div className="text-[9px] mt-1" style={{ color: C.subDim }}>
-                    เว้นว่างไว้ = สร้างส่วนโค้งอัตโนมัติผ่านจุดที่ระบุ
-                  </div>
-                </div>
-              )}
+      <div className="flex-1 min-h-0 flex">
+        <IconRail page={page} setPage={setPage} />
 
-              {/* Joint value inputs */}
-              <div className="flex flex-col gap-2">
-                {["j1", "j2", "j3", "j4", "j5"].map((key, i) => (
-                  <div key={key} className="flex items-center justify-between gap-2">
-                    <span className="text-xs shrink-0" style={{ color: C.sub }}>
-                      {`J${i + 1} (${key === "j5" ? "%" : "°"})`}
-                    </span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={key === "j4" ? "90" : jointInputs[key]}
-                      onChange={(e) => handleJointInputChange(key, e.target.value)}
-                      disabled={key === "j4"}
-                      className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs text-right outline-none"
-                      style={{
-                        background: C.panelAlt,
-                        border: `1px solid ${C.borderSoft}`,
-                        color: key === "j4" ? C.subDim : C.text,
-                        opacity: key === "j4" ? 0.6 : 1,
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
+        {page === "learn" ? (
+          <LearnPage />
+        ) : (
+          <div className="flex-1 min-h-0 flex">
+            <ControlPanel
+              modelReady={modelReady} isMoving={isMoving} isPlayingAll={isPlayingAll} handleHome={handleHome}
+              motionType={motionType} setMotionType={setMotionType}
+              viaInputs={viaInputs} handleViaInputChange={handleViaInputChange}
+              jointInputs={jointInputs} handleJointInputChange={handleJointInputChange} handleMove={handleMove}
+              trailActive={trailActive} trailControlRef={trailControlRef} setTrailActive={setTrailActive} setTrailCount={setTrailCount}
+              savedPoses={savedPoses} handleSavePose={handleSavePose} handleGoToPose={handleGoToPose}
+              handleDeletePose={handleDeletePose} handlePlayAll={handlePlayAll}
+            />
 
-              {/* Move button */}
-              <button
-                onClick={handleMove}
-                disabled={!modelReady || isMoving || isPlayingAll}
-                className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
-                style={{
-                  background: !modelReady || isMoving || isPlayingAll ? C.panelAlt : C.accent,
-                  color: !modelReady || isMoving || isPlayingAll ? C.subDim : "#fff",
-                  cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
-                }}
-              >
-                <Move size={14} />
-                {isMoving && !isPlayingAll ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
-              </button>
-
-              {/* ---- Trail recording controls ---- */}
-              <div style={{ borderTop: `1px solid ${C.borderSoft}`, paddingTop: 12 }}>
-                <div className="text-[10px] font-semibold tracking-wide mb-2" style={{ color: C.subDim }}>
-                  MOTION TRAIL
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      if (!trailControlRef.current || !modelReady) return;
-                      if (trailActive) {
-                        trailControlRef.current.stop();
-                        setTrailActive(false);
-                      } else {
-                        trailControlRef.current.start(motionType);
-                        setTrailActive(true);
-                      }
-                    }}
-                    disabled={!modelReady}
-                    className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-semibold transition-all"
-                    style={{
-                      background: trailActive
-                        ? "rgba(239,68,68,0.15)"
-                        : "rgba(34,197,94,0.15)",
-                      color: trailActive ? C.red : C.green,
-                      border: `1px solid ${trailActive ? C.red : C.green}44`,
-                      opacity: !modelReady ? 0.5 : 1,
-                    }}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full"
-                      style={{
-                        background: trailActive ? C.red : C.green,
-                        boxShadow: trailActive ? `0 0 6px ${C.red}` : "none",
-                        animation: trailActive ? "pulse 1s infinite" : "none",
-                      }}
-                    />
-                    {trailActive ? "หยุดบันทึก" : "บันทึกเส้นทาง"}
-                  </button>
-                  <button
-                    onClick={() => {
-                      trailControlRef.current?.clear();
-                      setTrailCount(0);
-                      setTrailActive(false);
-                    }}
-                    disabled={!modelReady}
-                    title="ล้างเส้นทาง"
-                    className="px-3 py-2 rounded-xl text-xs transition-colors"
-                    style={{
-                      background: C.panelAlt,
-                      color: C.sub,
-                      border: `1px solid ${C.borderSoft}`,
-                      opacity: !modelReady ? 0.5 : 1,
-                    }}
-                  >
-                    <RotateCcw size={13} />
-                  </button>
-                </div>
-                {trailActive && (
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}` }} />
-                    <span className="text-[10px]" style={{ color: C.subDim }}>กำลังบันทึก — เคลื่อนแขนเพื่อวาดเส้น</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Save current pose */}
-              <button
-                onClick={handleSavePose}
-                disabled={!modelReady || isPlayingAll}
-                className="flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-colors"
-                style={{
-                  background: C.panelAlt,
-                  border: `1px solid ${C.borderSoft}`,
-                  color: !modelReady || isPlayingAll ? C.subDim : C.text,
-                  cursor: !modelReady || isPlayingAll ? "default" : "pointer",
-                  opacity: !modelReady || isPlayingAll ? 0.6 : 1,
-                }}
-              >
-                <Save size={13} />
-                บันทึกท่าทาง
-              </button>
-
-              {/* Saved poses list */}
-              {savedPoses.length > 0 && (
-                <div className="flex flex-col gap-1.5 -mt-1">
-                  <div className="flex items-center justify-between">
-                    <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>
-                      ท่าทางที่บันทึกไว้
+            <div className="flex-1 min-h-0 flex flex-col">
+              <JointValueBar joints={joints} />
+              <div className="flex-1 min-h-0 p-4">
+                <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                  <div ref={viewerRef} className="w-full h-full" />
+                  {!modelReady && !modelError && (
+                    <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
+                      กำลังโหลดโมเดล 3D...
                     </div>
-                    <button
-                      onClick={handlePlayAll}
-                      disabled={!modelReady || isMoving || isPlayingAll}
-                      title="เล่นท่าทางทั้งหมดตามลำดับ (เริ่มจากตำแหน่งเริ่มต้นอัตโนมัติ)"
-                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-colors"
-                      style={{
-                        background: C.accentSoft,
-                        color: C.accent,
-                        opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1,
-                      }}
-                    >
-                      <Play size={10} />
-                      {isPlayingAll ? "กำลังเล่น..." : "เล่นทั้งหมด"}
-                    </button>
-                  </div>
-                  <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-0.5">
-                    {savedPoses.map((pose) => (
+                  )}
+                  {modelError && (
+                    <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.red }}>
+                      โหลดโมเดล 3D ไม่สำเร็จ
+                    </div>
+                  )}
+
+                  {modelReady && (
+                    <div className="absolute pointer-events-none" style={{ top: 16, left: 16, width: 180, height: 180, zIndex: 25 }}>
                       <div
-                        key={pose.id}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
-                        style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}` }}
+                        className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2.5 py-1.5 rounded-b-xl"
+                        style={{ background: "rgba(10,14,26,0.88)", borderTop: `1px solid rgba(28,35,64,0.8)` }}
                       >
-                        <span className="flex-1 min-w-0 truncate text-xs" style={{ color: C.text }}>
-                          {pose.name}
-                        </span>
-                        <button
-                          onClick={() => handleGoToPose(pose)}
-                          disabled={!modelReady || isMoving || isPlayingAll}
-                          title="ไปยังท่านี้"
-                          className="p-1 rounded-md transition-colors"
-                          style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1 }}
-                        >
-                          <Play size={11} />
-                        </button>
-                        <button
-                          onClick={() => handleDeletePose(pose.id)}
-                          disabled={isPlayingAll}
-                          title="ลบท่านี้"
-                          className="p-1 rounded-md transition-colors"
-                          style={{ background: "rgba(239,68,68,0.12)", color: C.red, opacity: isPlayingAll ? 0.5 : 1 }}
-                        >
-                          <Trash2 size={11} />
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <Activity size={9} color={C.accent} />
+                          <span style={{ fontSize: 9, fontFamily: "monospace", color: C.sub, fontWeight: 600, letterSpacing: "0.05em" }}>PATH VIEW</span>
+                        </div>
+                        {trailActive && (
+                          <div className="flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}`, animation: "pulse 1s infinite" }} />
+                            <span style={{ fontSize: 8, color: C.red, fontFamily: "monospace" }}>REC</span>
+                          </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
         )}
