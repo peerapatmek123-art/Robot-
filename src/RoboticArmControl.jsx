@@ -484,32 +484,35 @@ export default function RoboticArmControl() {
   const moveAnimRef = useRef(null);
 
   const animateToJoints = useCallback((target, duration = 1100) => {
-    if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
-    const start = { ...jointsRef.current };
-    const startTime = performance.now();
-    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+    return new Promise((resolve) => {
+      if (moveAnimRef.current) cancelAnimationFrame(moveAnimRef.current);
+      const start = { ...jointsRef.current };
+      const startTime = performance.now();
+      const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 
-    setIsMoving(true);
-    function step(now) {
-      const t = Math.min(1, (now - startTime) / duration);
-      const e = easeOutCubic(t);
-      const next = {
-        j1: start.j1 + (target.j1 - start.j1) * e,
-        j2: start.j2 + (target.j2 - start.j2) * e,
-        j3: start.j3 + (target.j3 - start.j3) * e,
-        j4: start.j4 + (target.j4 - start.j4) * e,
-        j5: start.j5 + (target.j5 - start.j5) * e,
-      };
-      jointsRef.current = next;
-      setJoints(next);
-      if (t < 1) {
-        moveAnimRef.current = requestAnimationFrame(step);
-      } else {
-        moveAnimRef.current = null;
-        setIsMoving(false);
+      setIsMoving(true);
+      function step(now) {
+        const t = Math.min(1, (now - startTime) / duration);
+        const e = easeOutCubic(t);
+        const next = {
+          j1: start.j1 + (target.j1 - start.j1) * e,
+          j2: start.j2 + (target.j2 - start.j2) * e,
+          j3: start.j3 + (target.j3 - start.j3) * e,
+          j4: start.j4 + (target.j4 - start.j4) * e,
+          j5: start.j5 + (target.j5 - start.j5) * e,
+        };
+        jointsRef.current = next;
+        setJoints(next);
+        if (t < 1) {
+          moveAnimRef.current = requestAnimationFrame(step);
+        } else {
+          moveAnimRef.current = null;
+          setIsMoving(false);
+          resolve();
+        }
       }
-    }
-    moveAnimRef.current = requestAnimationFrame(step);
+      moveAnimRef.current = requestAnimationFrame(step);
+    });
   }, []);
 
   useEffect(() => () => {
@@ -555,6 +558,19 @@ export default function RoboticArmControl() {
     animateToJoints(pose.joints);
   }, [animateToJoints]);
 
+  // ---- เล่นท่าทางทั้งหมดต่อเนื่องกัน — เริ่มจากตำแหน่งเริ่มต้น (HOME) เองโดยไม่ต้องกด Home ก่อน ----
+  const [isPlayingAll, setIsPlayingAll] = useState(false);
+
+  const handlePlayAll = useCallback(async () => {
+    if (isPlayingAll || savedPoses.length === 0) return;
+    setIsPlayingAll(true);
+    await animateToJoints(HOME);
+    for (const pose of savedPoses) {
+      await animateToJoints(pose.joints);
+    }
+    setIsPlayingAll(false);
+  }, [isPlayingAll, savedPoses, animateToJoints]);
+
   const handleDeletePose = useCallback((id) => {
     setSavedPoses((prev) => prev.filter((p) => p.id !== id));
   }, []);
@@ -573,14 +589,14 @@ export default function RoboticArmControl() {
       next.j1 = clampDeg(cur.j1 + delta * DEG_PER_UNIT, -180, 180);
     } else if (axis === "y") {
       if (delta > 0) {
-        // ลากขึ้น — เข้าหา 0 องศา
+        // ลากขึ้น — J2/J3 เข้าหา 0 องศา
         const step = delta * DEG_PER_UNIT;
         next.j2 = moveToward(cur.j2, 0, step);
         next.j3 = moveToward(cur.j3, 0, step);
       } else {
-        // ลากลง — มุมต้องเพิ่มไปทางบวก
+        // ลากลง — J2 ไปทางลบ, J3 ไปทางบวก
         const step = Math.abs(delta) * DEG_PER_UNIT;
-        next.j2 = clampDeg(cur.j2 + step, -90, 90);
+        next.j2 = clampDeg(cur.j2 - step, -90, 90);
         next.j3 = clampDeg(cur.j3 + step, -135, 135);
       }
     } else if (axis === "z") {
@@ -653,15 +669,15 @@ export default function RoboticArmControl() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleHome}
-            disabled={!modelReady || isMoving}
+            disabled={!modelReady || isMoving || isPlayingAll}
             title="กลับตำแหน่งเริ่มต้น (Home)"
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors"
             style={{
               background: C.panelAlt,
-              color: !modelReady || isMoving ? C.subDim : C.text,
+              color: !modelReady || isMoving || isPlayingAll ? C.subDim : C.text,
               border: `1px solid ${C.borderSoft}`,
-              cursor: !modelReady || isMoving ? "default" : "pointer",
-              opacity: !modelReady || isMoving ? 0.6 : 1,
+              cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
+              opacity: !modelReady || isMoving || isPlayingAll ? 0.6 : 1,
             }}
           >
             <HomeIcon size={13} />
@@ -784,29 +800,29 @@ export default function RoboticArmControl() {
           {/* Move button */}
           <button
             onClick={handleMovePTP}
-            disabled={!modelReady || isMoving}
+            disabled={!modelReady || isMoving || isPlayingAll}
             className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
             style={{
-              background: !modelReady || isMoving ? C.panelAlt : C.accent,
-              color: !modelReady || isMoving ? C.subDim : "#fff",
-              cursor: !modelReady || isMoving ? "default" : "pointer",
+              background: !modelReady || isMoving || isPlayingAll ? C.panelAlt : C.accent,
+              color: !modelReady || isMoving || isPlayingAll ? C.subDim : "#fff",
+              cursor: !modelReady || isMoving || isPlayingAll ? "default" : "pointer",
             }}
           >
             <Move size={14} />
-            {isMoving ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
+            {isMoving && !isPlayingAll ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
           </button>
 
           {/* Save current pose */}
           <button
             onClick={handleSavePose}
-            disabled={!modelReady}
+            disabled={!modelReady || isPlayingAll}
             className="flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium transition-colors"
             style={{
               background: C.panelAlt,
               border: `1px solid ${C.borderSoft}`,
-              color: !modelReady ? C.subDim : C.text,
-              cursor: !modelReady ? "default" : "pointer",
-              opacity: !modelReady ? 0.6 : 1,
+              color: !modelReady || isPlayingAll ? C.subDim : C.text,
+              cursor: !modelReady || isPlayingAll ? "default" : "pointer",
+              opacity: !modelReady || isPlayingAll ? 0.6 : 1,
             }}
           >
             <Save size={13} />
@@ -816,8 +832,24 @@ export default function RoboticArmControl() {
           {/* Saved poses list */}
           {savedPoses.length > 0 && (
             <div className="flex flex-col gap-1.5 -mt-1">
-              <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>
-                ท่าทางที่บันทึกไว้
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>
+                  ท่าทางที่บันทึกไว้
+                </div>
+                <button
+                  onClick={handlePlayAll}
+                  disabled={!modelReady || isMoving || isPlayingAll}
+                  title="เล่นท่าทางทั้งหมดตามลำดับ (เริ่มจากตำแหน่งเริ่มต้นอัตโนมัติ)"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-colors"
+                  style={{
+                    background: C.accentSoft,
+                    color: C.accent,
+                    opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1,
+                  }}
+                >
+                  <Play size={10} />
+                  {isPlayingAll ? "กำลังเล่น..." : "เล่นทั้งหมด"}
+                </button>
               </div>
               <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-0.5">
                 {savedPoses.map((pose) => (
@@ -831,18 +863,19 @@ export default function RoboticArmControl() {
                     </span>
                     <button
                       onClick={() => handleGoToPose(pose)}
-                      disabled={!modelReady || isMoving}
+                      disabled={!modelReady || isMoving || isPlayingAll}
                       title="ไปยังท่านี้"
                       className="p-1 rounded-md transition-colors"
-                      style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving ? 0.5 : 1 }}
+                      style={{ background: C.accentSoft, color: C.accent, opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1 }}
                     >
                       <Play size={11} />
                     </button>
                     <button
                       onClick={() => handleDeletePose(pose.id)}
+                      disabled={isPlayingAll}
                       title="ลบท่านี้"
                       className="p-1 rounded-md transition-colors"
-                      style={{ background: "rgba(239,68,68,0.12)", color: C.red }}
+                      style={{ background: "rgba(239,68,68,0.12)", color: C.red, opacity: isPlayingAll ? 0.5 : 1 }}
                     >
                       <Trash2 size={11} />
                     </button>
