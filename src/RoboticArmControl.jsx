@@ -270,24 +270,7 @@ function useArmScene(containerRef, joints, onIkDrag) {
     window.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
-    const GIZMO_REF_DISTANCE = controls.radius;
-    const _wristWorld = new THREE.Vector3();
-    let raf;
-    function tick() {
-      applyCamera();
-      const s = sceneRef.current;
-      if (s && s.ready && s.wrist && s.gizmo) {
-        if (!handleDrag.active) {
-          s.wrist.getWorldPosition(_wristWorld);
-          s.gizmo.position.copy(_wristWorld);
-        }
-        const camDist = camera.position.distanceTo(s.gizmo.position);
-        s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
-      }
-      renderer.render(scene, camera);
-      raf = requestAnimationFrame(tick);
-    }
-    tick();
+    }tick();
 
     sceneRef.current = {
       baseGroup: null,
@@ -347,7 +330,7 @@ function useArmScene(containerRef, joints, onIkDrag) {
       });
 
       // ---- ลูกศร XYZ (แดง/เขียว/น้ำเงิน) ลากที่ข้อมือ ไม่ผูกกับหมุนของข้อต่อ ----
-      const gizmoLen = 0.17;
+      const gizmoLen = 0.09;
       const HIT_PADDING = 2.0;
       function makeArrow(dir, color, axis) {
         const shaftLen = gizmoLen * 1.3;
