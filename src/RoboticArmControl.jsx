@@ -854,6 +854,28 @@ export default function RoboticArmControl() {
     });
   }, [viaInputs]);
 
+  // ---- ระยะเวลาการเคลื่อนที่ต่อโหมด — LIN/CIRC ช้ากว่า PTP เพราะต้องคุมเส้นทางให้ตรง/โค้งแม่นยำ ----
+  const MOVE_DURATION = { PTP: 900, LIN: 1500, CIRC: 1300 };
+
+  // ---- runMotion — จุดเดียวที่ใช้เคลื่อนที่ไปยัง target joints ใดๆ โดยเลือกวิธีคำนวณ
+  // ตาม motion ที่ระบุ (PTP = joint space, LIN/CIRC = Cartesian) พร้อมบันทึก trail ----
+  const runMotion = useCallback((targetJoints, motion) => {
+    const duration = MOVE_DURATION[motion] ?? 1100;
+    const doMove = motion === "PTP"
+      ? () => animateToJoints(targetJoints, duration)
+      : () => animateCartesian(targetJoints, motion, duration);
+
+    if (trailControlRef.current) {
+      trailControlRef.current.start(motion);
+      setTrailActive(true);
+      return doMove().then(() => {
+        trailControlRef.current?.stop();
+        setTrailActive(false);
+      });
+    }
+    return doMove();
+  }, [animateToJoints, animateCartesian]);
+
   const handleMove = useCallback(() => {
     const parsed = {
       j1: parseFloat(jointInputs.j1),
@@ -868,22 +890,8 @@ export default function RoboticArmControl() {
       j4: 90,
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
-    const runMove = motionType === "PTP"
-      ? () => animateToJoints(targetJoints)
-      : () => animateCartesian(targetJoints, motionType);
-
-    // บันทึก trail อัตโนมัติระหว่างการเคลื่อนที่
-    if (trailControlRef.current) {
-      trailControlRef.current.start(motionType);
-      setTrailActive(true);
-      runMove().then(() => {
-        trailControlRef.current?.stop();
-        setTrailActive(false);
-      });
-    } else {
-      runMove();
-    }
-  }, [jointInputs, animateToJoints, animateCartesian, motionType]);
+    runMotion(targetJoints, motionType);
+  }, [jointInputs, runMotion, motionType]);
 
   // ---- ลากลูกศร 3 แกน (X/Y/Z) ที่ปลายมือคีบ ควบคุมข้อต่อโดยตรง ----
   // แกน X: หมุนเฉพาะ J1 (ฐาน) ตามทิศที่ลาก — J2/J3/J4/J5 คงค่าเดิม
@@ -904,8 +912,8 @@ export default function RoboticArmControl() {
   }, []);
 
   const handleGoToPose = useCallback((pose) => {
-    animateToJoints(pose.joints);
-  }, [animateToJoints]);
+    runMotion(pose.joints, motionType);
+  }, [runMotion, motionType]);
 
   // ---- เล่นท่าทางทั้งหมดต่อเนื่องกัน — เริ่มจากตำแหน่งเริ่มต้น (HOME) เองโดยไม่ต้องกด Home ก่อน ----
   const [isPlayingAll, setIsPlayingAll] = useState(false);
@@ -913,12 +921,12 @@ export default function RoboticArmControl() {
   const handlePlayAll = useCallback(async () => {
     if (isPlayingAll || savedPoses.length === 0) return;
     setIsPlayingAll(true);
-    await animateToJoints(HOME);
+    await runMotion(HOME, motionType);
     for (const pose of savedPoses) {
-      await animateToJoints(pose.joints);
+      await runMotion(pose.joints, motionType);
     }
     setIsPlayingAll(false);
-  }, [isPlayingAll, savedPoses, animateToJoints]);
+  }, [isPlayingAll, savedPoses, runMotion, motionType]);
 
   const handleDeletePose = useCallback((id) => {
     setSavedPoses((prev) => prev.filter((p) => p.id !== id));
