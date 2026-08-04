@@ -636,7 +636,13 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
         const tipMidWorld = tipLWorld.add(tipRWorld).multiplyScalar(0.5);
 
         const modelScale = model.scale.x || 1;
-        const measuredL4 = wristWorld.distanceTo(tipMidWorld) / modelScale;
+        // วัดเฉพาะ "ระยะแนวราบ" (แกน X-Z) ไม่ใช่ระยะเส้นตรง 3 มิติเต็ม เพราะสูตร analytic
+        // สมมติว่า L4 ยื่นออกแนวรัศมี (แนวราบ) ล้วนๆ — ถ้าใช้ระยะเส้นตรง 3 มิติ แล้วมี
+        // ส่วนต่างแนวดิ่งหลงเหลืออยู่บ้าง (มือคีบไม่ level เป๊ะ 100%) จะทำให้ L4 ถูกประเมินสูงเกินจริง
+        // ส่งผลให้ r = rTotal - L4 เพี้ยนเล็กลงกว่าความจริง จนดันเข้าเขต MIN_REACH ทั้งที่ยังไปถึงได้จริง
+        const dxHoriz = tipMidWorld.x - wristWorld.x;
+        const dzHoriz = tipMidWorld.z - wristWorld.z;
+        const measuredL4 = Math.sqrt(dxHoriz * dxHoriz + dzHoriz * dzHoriz) / modelScale;
         if (measuredL4 > 0) L4 = measuredL4;
       }
 
@@ -1005,21 +1011,20 @@ export default function RoboticArmControl() {
     if (!s || !s.ready) return;
     const tx = parseFloat(x) || 0, ty = parseFloat(y) || 0, tz = parseFloat(z) || 0;
 
-    // เช็ค reachability แบบหยาบก่อนด้วยสูตร analytic (เร็ว, กันเคสไกลเกินพิสัยชัดเจน)
+    // สูตร analytic ใช้แค่เป็น "seed เริ่มต้น" เพื่อช่วยให้ CCD ลู่เข้าเร็ว/ท่าดูเป็นธรรมชาติ
+    // เท่านั้น — ไม่ใช้เป็นตัวตัดสิน reachability อีกต่อไป เพราะสมมติฐานทิศทาง L4 ของมัน
+    // ทำให้ปฏิเสธตำแหน่งที่จริงๆ ไปถึงได้สบายๆ (false positive unreachable) เช่น ตำแหน่งที่
+    // แขนอยู่ตรงนั้นอยู่แล้วแทบไม่ขยับเลยก็ยังโดนปฏิเสธ — ตอนนี้ให้ CCD (อิงตำแหน่งปลายนิ้วจริง)
+    // เป็นผู้ตัดสินเพียงผู้เดียวว่าไปถึงได้จริงหรือไม่
     const rough = solveIK(tx, ty, tz, jointsRef.current);
-    if (!rough.ok) {
-      setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
-      return;
-    }
-
-    // seed จากผลลัพธ์ analytic (ซึ่งเลือก configuration ข้อศอกที่ "เป็นธรรมชาติ" ไว้แล้ว
-    // จากการเช็ค A/B ในขอบเขตข้อต่อ) แล้วใช้ CCD แค่ไม่กี่รอบเพื่อแก้ค่าคลาดเคลื่อนเล็กน้อย
-    // จากสมมติฐานทิศทาง L4 เท่านั้น — เดิม seed จาก HOME แล้วปล่อย CCD ไล่เองอิสระ ทำให้
-    // บางครั้งข้อศอก/ไหล่ไปเจอ configuration ที่ผิดธรรมชาติ (งอย้อนกลับ/บิดผิดท่า)
     const modelScale = s.modelScale || 1;
-    s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
+    if (rough.ok) {
+      s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
+    } else {
+      s.setChainDegrees(jointsRef.current); // seed จากท่าปัจจุบันแทน ให้ CCD ไล่เอง
+    }
     const targetWorld = new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale);
-    const result = s.numericIK(targetWorld, 6);
+    const result = s.numericIK(targetWorld, rough.ok ? 8 : 30);
     if (result.reachedDist > 0.015 * modelScale) {
       setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
       return;
