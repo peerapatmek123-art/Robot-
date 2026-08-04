@@ -55,16 +55,24 @@ function persistSavedPoses(poses) {
   }
 }
 
-/** solveIK3 — Inverse Kinematics แบบง่าย (2-link planar + ฐานหมุน) หา J1/J2/J3 */
+/** solveIK3 — Inverse Kinematics แบบง่าย (2-link planar + ฐานหมุน) หา J1/J2/J3
+ *  หมายเหตุ: จุดปลายทาง/ต้นทางอาจอยู่ในระยะที่ไปถึงได้ แต่เส้นตรง/เส้นโค้งระหว่างสอง
+ *  จุดนั้นอาจพาดผ่านช่วงที่ "เกินระยะ" ของแขนไปชั่วขณะ (เพราะช่วงที่ไปถึงได้ของ
+ *  L2/L3 แคบ) เดิมฟังก์ชันนี้จะคืน ok:false ในช่วงนั้น ทำให้โค้ดฝั่งเรียกใช้ต้อง
+ *  สลับไปใช้การ lerp มุมข้อต่อแบบ joint-space แทนกลางอากาศ เกิดจุดหักงอ/เส้นโค้ง
+ *  ผิดปกติ — ตอนนี้แก้โดย clamp ระยะเข้าขอบเขตที่ไปถึงได้แทนการ bail out ทำให้
+ *  j1/j2/j3 ต่อเนื่องตลอดเส้นทาง ไม่มีการสลับสูตรกลางทางอีกต่อไป
+ */
 function solveIK3(x, y, z) {
   const j1 = THREE.MathUtils.radToDeg(Math.atan2(x, z));
   const r = Math.sqrt(x * x + z * z);
   const dy = y - L1;
-  const dist = Math.sqrt(r * r + dy * dy);
+  const rawDist = Math.sqrt(r * r + dy * dy);
 
-  if (dist > L2 + L3 - 0.001 || dist < Math.abs(L2 - L3) + 0.001) {
-    return { ok: false, j1, j2: 0, j3: 0 };
-  }
+  const minDist = Math.abs(L2 - L3) + 0.001;
+  const maxDist = L2 + L3 - 0.001;
+  const reachable = rawDist >= minDist && rawDist <= maxDist;
+  const dist = THREE.MathUtils.clamp(rawDist, minDist, maxDist);
 
   const cosJ3 = (dist * dist - L2 * L2 - L3 * L3) / (2 * L2 * L3);
   const j3Mag = Math.acos(THREE.MathUtils.clamp(cosJ3, -1, 1));
@@ -76,7 +84,7 @@ function solveIK3(x, y, z) {
   const j3 = THREE.MathUtils.radToDeg(j3Mag);
 
   return {
-    ok: true,
+    ok: reachable, // ใช้เป็นข้อมูลแจ้งเตือน UI เฉยๆ ไม่ใช้ตัดสินใจสลับสูตรคำนวณอีกต่อไป
     j1: THREE.MathUtils.clamp(j1, -180, 180),
     j2: THREE.MathUtils.clamp(j2, -90, 90),
     j3: THREE.MathUtils.clamp(j3, -135, 135),
@@ -1338,10 +1346,15 @@ export default function RoboticArmControl() {
         const e = easeOutCubic(t);
         const pos = pathFn(e);
         const ik = solveIK3(pos.x, pos.y, pos.z);
+        // j1/j2/j3 always follow the IK solution for the current point on the
+        // Cartesian path (straight line for LIN, arc for CIRC) — no more
+        // switching to a joint-space lerp mid-motion, which was the cause of
+        // the visible kink/curve. j4 and j5 aren't part of the position IK,
+        // so they keep moving straight toward the user's target values.
         const next = {
-          j1: ik.ok ? ik.j1 : startJoints.j1 + (targetJoints.j1 - startJoints.j1) * e,
-          j2: ik.ok ? ik.j2 : startJoints.j2 + (targetJoints.j2 - startJoints.j2) * e,
-          j3: ik.ok ? ik.j3 : startJoints.j3 + (targetJoints.j3 - startJoints.j3) * e,
+          j1: ik.j1,
+          j2: ik.j2,
+          j3: ik.j3,
           j4: startJoints.j4 + (targetJoints.j4 - startJoints.j4) * e,
           j5: startJoints.j5 + (targetJoints.j5 - startJoints.j5) * e,
         };
