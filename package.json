@@ -38,7 +38,7 @@
   },
   "build": {
     "appId": "com.lowcostrobotarm.control",
-    "productName": "5-DOF Robotic Arm Control",
+    "productName": "ARM-ROBOT_LAB",
     "directories": { "output": "release" },
     "publish": null,
     "files": [
