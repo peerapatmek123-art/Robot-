@@ -270,7 +270,32 @@ function useArmScene(containerRef, joints, onIkDrag) {
     window.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
-    }tick();
+    const GIZMO_REF_DISTANCE = controls.radius;
+    const _wristWorld = new THREE.Vector3();
+    const _fingerLWorld = new THREE.Vector3();
+    const _fingerRWorld = new THREE.Vector3();
+    let raf;
+    function tick() {
+      applyCamera();
+      const s = sceneRef.current;
+      if (s && s.ready && s.wrist && s.gizmo) {
+        if (!handleDrag.active) {
+          if (s.fingerL && s.fingerR) {
+            s.fingerL.getWorldPosition(_fingerLWorld);
+            s.fingerR.getWorldPosition(_fingerRWorld);
+            _wristWorld.copy(_fingerLWorld).add(_fingerRWorld).multiplyScalar(0.5);
+          } else {
+            s.wrist.getWorldPosition(_wristWorld);
+          }
+          s.gizmo.position.copy(_wristWorld);
+        }
+        const camDist = camera.position.distanceTo(s.gizmo.position);
+        s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
+      }
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(tick);
+    }
+    tick();
 
     sceneRef.current = {
       baseGroup: null,
