@@ -270,52 +270,6 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
     window.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
-    const GIZMO_REF_DISTANCE = controls.radius;
-    const _wristWorld = new THREE.Vector3();
-    const _fingerLWorld = new THREE.Vector3();
-    const _fingerRWorld = new THREE.Vector3();
-    const _fingerLBox = new THREE.Box3();
-    const _fingerRBox = new THREE.Box3();
-    let raf;
-    function tick() {
-      applyCamera();
-      const s = sceneRef.current;
-      if (s && s.ready && s.wrist && s.gizmo) {
-        if (!handleDrag.active) {
-          if (s.fingerL && s.fingerR) {
-            _fingerLBox.setFromObject(s.fingerL);
-            _fingerRBox.setFromObject(s.fingerR);
-            _fingerLBox.getCenter(_fingerLWorld);
-            _fingerRBox.getCenter(_fingerRWorld);
-            _wristWorld.copy(_fingerLWorld).add(_fingerRWorld).multiplyScalar(0.5);
-          } else {
-            s.wrist.getWorldPosition(_wristWorld);
-          }
-          s.gizmo.position.copy(_wristWorld);
-
-          // ---- Trail sampling ----
-          if (trailState.recording) {
-            if (!lastTrailPos || _wristWorld.distanceTo(lastTrailPos) >= MIN_DIST) {
-              addTrailPoint(_wristWorld, trailState.motionType);
-              lastTrailPos = _wristWorld.clone();
-            }
-          }
-
-          // อัปเดต current position dot ใน minimap
-          curDot.position.set(_wristWorld.x, 0.001, _wristWorld.z);
-        }
-        const camDist = camera.position.distanceTo(s.gizmo.position);
-        s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
-      }
-      renderer.render(scene, camera);
-
-      // ---- Render minimap ----
-      miniRenderer.render(miniScene, miniCamera);
-
-      raf = requestAnimationFrame(tick);
-    }
-    tick();
-
     sceneRef.current = {
       baseGroup: null,
       shoulder: null,
@@ -494,6 +448,52 @@ function useArmScene(containerRef, joints, onIkDrag, trailControlRef) {
         getCount: () => trailCount,
       };
     }
+
+    const GIZMO_REF_DISTANCE = controls.radius;
+    const _wristWorld = new THREE.Vector3();
+    const _fingerLWorld = new THREE.Vector3();
+    const _fingerRWorld = new THREE.Vector3();
+    const _fingerLBox = new THREE.Box3();
+    const _fingerRBox = new THREE.Box3();
+    let raf;
+    function tick() {
+      applyCamera();
+      const s = sceneRef.current;
+      if (s && s.ready && s.wrist && s.gizmo) {
+        if (!handleDrag.active) {
+          if (s.fingerL && s.fingerR) {
+            _fingerLBox.setFromObject(s.fingerL);
+            _fingerRBox.setFromObject(s.fingerR);
+            _fingerLBox.getCenter(_fingerLWorld);
+            _fingerRBox.getCenter(_fingerRWorld);
+            _wristWorld.copy(_fingerLWorld).add(_fingerRWorld).multiplyScalar(0.5);
+          } else {
+            s.wrist.getWorldPosition(_wristWorld);
+          }
+          s.gizmo.position.copy(_wristWorld);
+
+          // ---- Trail sampling ----
+          if (trailState.recording) {
+            if (!lastTrailPos || _wristWorld.distanceTo(lastTrailPos) >= MIN_DIST) {
+              addTrailPoint(_wristWorld, trailState.motionType);
+              lastTrailPos = _wristWorld.clone();
+            }
+          }
+
+          // อัปเดต current position dot ใน minimap
+          curDot.position.set(_wristWorld.x, 0.001, _wristWorld.z);
+        }
+        const camDist = camera.position.distanceTo(s.gizmo.position);
+        s.gizmo.scale.setScalar(camDist / GIZMO_REF_DISTANCE);
+      }
+      renderer.render(scene, camera);
+
+      // ---- Render minimap ----
+      miniRenderer.render(miniScene, miniCamera);
+
+      raf = requestAnimationFrame(tick);
+    }
+    tick();
 
     const loader = new GLTFLoader();
     loader.load(
