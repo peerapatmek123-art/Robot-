@@ -1263,10 +1263,11 @@ function ControlPanel({
 export default function RoboticArmControl() {
   const [page, setPage] = useState("control"); // "control" | "learn"
 
-  const [ports, setPorts] = useState(["COM3"]);
-  const [selectedPort, setSelectedPort] = useState("COM3");
+  const [ports, setPorts] = useState([]);
+  const [selectedPort, setSelectedPort] = useState("");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [connectedPort, setConnectedPort] = useState(""); // พอร์ตที่ "เชื่อมต่อจริง" อยู่ตอนนี้ (มาจากผลลัพธ์ connectPort ไม่ใช่แค่ค่าที่เลือกในดรอปดาวน์)
 
   const trailControlRef = useRef(null);
   const [trailActive, setTrailActive] = useState(false);
@@ -1527,35 +1528,68 @@ export default function RoboticArmControl() {
     try {
       const list = await window.electronAPI.listPorts();
       setPorts(list);
+
+      // ถ้า "พอร์ตที่เชื่อมต่ออยู่จริง" หายไปจากรายชื่อ (เช่น ถอดสาย USB) ให้ตัดสถานะ
+      // การเชื่อมต่อทิ้งทันที ไม่งั้น UI จะค้างว่า "เชื่อมต่อแล้ว" ทั้งที่สายหลุดไปแล้ว
+      if (connectedPort && !list.includes(connectedPort)) {
+        setConnected(false);
+        setConnectedPort("");
+      }
+
+      // ห้ามเปลี่ยนพอร์ตที่เลือกไว้ระหว่างที่กำลังเชื่อมต่ออยู่ — ดรอปดาวน์ตอนนั้นต้อง
+      // ตามพอร์ตที่ต่ออยู่จริงเท่านั้น (ดูฝั่ง render ด้านล่าง)
+      if (connected) return;
+
       if (list.length === 0) {
         setSelectedPort("");
-        setConnected(false);
         return;
       }
       if (!list.includes(selectedPort)) setSelectedPort(list[0]);
     } catch (err) {
       console.error(err);
     }
-  }, [selectedPort]);
+  }, [selectedPort, connected, connectedPort]);
 
-  useEffect(() => { refreshPorts(); }, [refreshPorts]);
+  useEffect(() => {
+    refreshPorts();
+    // สแกนพอร์ตซ้ำเป็นระยะ เพื่อให้ดรอปดาวน์ตามทันเวลามีการเสียบ/ถอดสาย USB-Serial
+    const timer = setInterval(refreshPorts, 3000);
+    return () => clearInterval(timer);
+  }, [refreshPorts]);
 
   const handleConnect = useCallback(async () => {
     if (!selectedPort) return;
     if (!window.electronAPI?.connectPort) {
       setConnected(false);
+      setConnectedPort("");
       return;
     }
     setConnecting(true);
     try {
       const res = await window.electronAPI.connectPort(selectedPort);
-      setConnected(!!res?.ok);
+      const ok = !!res?.ok;
+      setConnected(ok);
+      // ใช้ชื่อพอร์ตที่ backend ยืนยันกลับมาถ้ามี (เผื่อ backend ระบุพอร์ตจริงต่างจากที่ขอ)
+      // ไม่งั้น fallback เป็นพอร์ตที่เลือกไว้ตอนกดเชื่อมต่อ
+      setConnectedPort(ok ? (res?.port || selectedPort) : "");
     } catch {
       setConnected(false);
+      setConnectedPort("");
     } finally {
       setConnecting(false);
     }
   }, [selectedPort]);
+
+  const handleDisconnect = useCallback(async () => {
+    try {
+      await window.electronAPI?.disconnectPort?.(connectedPort);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setConnected(false);
+      setConnectedPort("");
+    }
+  }, [connectedPort]);
 
   return (
     <div
@@ -1574,31 +1608,42 @@ export default function RoboticArmControl() {
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs relative" style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}>
-            <Wifi size={13} color={C.sub} />
-            <select
-              value={selectedPort}
-              onChange={(e) => setSelectedPort(e.target.value)}
-              className="bg-transparent outline-none appearance-none pr-4"
-              style={{ color: C.text }}
-            >
-              {ports.map((p) => (<option key={p} value={p} style={{ background: C.panel }}>{p}</option>))}
-            </select>
+            <Wifi size={13} color={connected ? C.green : C.sub} />
+            {connected ? (
+              // ขณะเชื่อมต่ออยู่ ช่องนี้ต้อง "แสดงพอร์ตที่ต่ออยู่จริง" เท่านั้น ห้ามให้สลับ
+              // พอร์ตอื่นระหว่างที่ serial กำลังเปิดใช้งานอยู่
+              <span className="pr-4" style={{ color: C.text }}>{connectedPort}</span>
+            ) : (
+              <select
+                value={selectedPort}
+                onChange={(e) => setSelectedPort(e.target.value)}
+                disabled={connecting || ports.length === 0}
+                className="bg-transparent outline-none appearance-none pr-4"
+                style={{ color: ports.length === 0 ? C.subDim : C.text }}
+              >
+                {ports.length === 0 ? (
+                  <option value="" style={{ background: C.panel }}>ไม่พบพอร์ต</option>
+                ) : (
+                  ports.map((p) => (<option key={p} value={p} style={{ background: C.panel }}>{p}</option>))
+                )}
+              </select>
+            )}
             <ChevronDown size={13} color={C.subDim} className="pointer-events-none absolute right-2.5" />
           </div>
 
           <button
-            onClick={handleConnect}
-            disabled={connected || connecting || !selectedPort}
+            onClick={connected ? handleDisconnect : handleConnect}
+            disabled={connecting || (!connected && !selectedPort)}
             className="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium transition-colors"
             style={{
               background: connected ? "rgba(34,197,94,0.12)" : C.accent,
               color: connected ? C.green : "#fff",
               opacity: connecting ? 0.7 : 1,
-              cursor: connected || connecting || !selectedPort ? "default" : "pointer",
+              cursor: connecting || (!connected && !selectedPort) ? "default" : "pointer",
             }}
           >
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? C.green : "#fff" }} />
-            {connecting ? "กำลังเชื่อมต่อ..." : connected ? "เชื่อมต่อแล้ว" : "Connect"}
+            {connecting ? "กำลังเชื่อมต่อ..." : connected ? `เชื่อมต่อแล้ว (${connectedPort})` : "Connect"}
           </button>
         </div>
       </div>
