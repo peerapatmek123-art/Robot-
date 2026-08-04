@@ -1179,11 +1179,10 @@ function ControlPanel({
             <input
               type="text"
               inputMode="decimal"
-              value={key === "j4" ? "90" : jointInputs[key]}
+              value={jointInputs[key]}
               onChange={(e) => handleJointInputChange(key, e.target.value)}
-              disabled={key === "j4"}
               className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs text-right outline-none"
-              style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: key === "j4" ? C.subDim : C.text, opacity: key === "j4" ? 0.6 : 1 }}
+              style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
             />
           </div>
         ))}
@@ -1343,7 +1342,7 @@ export default function RoboticArmControl() {
           j1: ik.ok ? ik.j1 : startJoints.j1 + (targetJoints.j1 - startJoints.j1) * e,
           j2: ik.ok ? ik.j2 : startJoints.j2 + (targetJoints.j2 - startJoints.j2) * e,
           j3: ik.ok ? ik.j3 : startJoints.j3 + (targetJoints.j3 - startJoints.j3) * e,
-          j4: 90,
+          j4: startJoints.j4 + (targetJoints.j4 - startJoints.j4) * e,
           j5: startJoints.j5 + (targetJoints.j5 - startJoints.j5) * e,
         };
         jointsRef.current = next;
@@ -1384,13 +1383,14 @@ export default function RoboticArmControl() {
       j1: parseFloat(jointInputs.j1),
       j2: parseFloat(jointInputs.j2),
       j3: parseFloat(jointInputs.j3),
+      j4: parseFloat(jointInputs.j4),
       j5: parseFloat(jointInputs.j5),
     };
     const targetJoints = {
       j1: Number.isFinite(parsed.j1) ? parsed.j1 : jointsRef.current.j1,
       j2: Number.isFinite(parsed.j2) ? parsed.j2 : jointsRef.current.j2,
       j3: Number.isFinite(parsed.j3) ? parsed.j3 : jointsRef.current.j3,
-      j4: 90,
+      j4: Number.isFinite(parsed.j4) ? parsed.j4 : jointsRef.current.j4,
       j5: Number.isFinite(parsed.j5) ? parsed.j5 : jointsRef.current.j5,
     };
     runMotion(targetJoints, motionType);
@@ -1548,61 +1548,61 @@ export default function RoboticArmControl() {
       <div className="flex-1 min-h-0 flex">
         <IconRail page={page} setPage={setPage} />
 
-        {page === "learn" ? (
+        <div className="flex-1 min-h-0" style={{ display: page === "learn" ? "flex" : "none" }}>
           <LearnPage />
-        ) : (
-          <div className="flex-1 min-h-0 flex">
-            <ControlPanel
-              modelReady={modelReady} isMoving={isMoving} isPlayingAll={isPlayingAll} handleHome={handleHome}
-              motionType={motionType} setMotionType={setMotionType}
-              viaInputs={viaInputs} handleViaInputChange={handleViaInputChange}
-              handleCaptureVia={handleCaptureVia} handleClearVia={handleClearVia}
-              jointInputs={jointInputs} handleJointInputChange={handleJointInputChange} handleMove={handleMove}
-              trailActive={trailActive} trailControlRef={trailControlRef} setTrailActive={setTrailActive} setTrailCount={setTrailCount}
-              savedPoses={savedPoses} handleSavePose={handleSavePose} handleGoToPose={handleGoToPose}
-              handleDeletePose={handleDeletePose} handlePlayAll={handlePlayAll}
-            />
+        </div>
 
-            <div className="flex-1 min-h-0 flex flex-col">
-              <JointValueBar joints={joints} />
-              <div className="flex-1 min-h-0 p-4">
-                <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                  <div ref={viewerRef} className="w-full h-full" />
-                  {!modelReady && !modelError && (
-                    <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
-                      กำลังโหลดโมเดล 3D...
-                    </div>
-                  )}
-                  {modelError && (
-                    <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.red }}>
-                      โหลดโมเดล 3D ไม่สำเร็จ
-                    </div>
-                  )}
+        <div className="flex-1 min-h-0 flex" style={{ display: page === "control" ? "flex" : "none" }}>
+          <ControlPanel
+            modelReady={modelReady} isMoving={isMoving} isPlayingAll={isPlayingAll} handleHome={handleHome}
+            motionType={motionType} setMotionType={setMotionType}
+            viaInputs={viaInputs} handleViaInputChange={handleViaInputChange}
+            handleCaptureVia={handleCaptureVia} handleClearVia={handleClearVia}
+            jointInputs={jointInputs} handleJointInputChange={handleJointInputChange} handleMove={handleMove}
+            trailActive={trailActive} trailControlRef={trailControlRef} setTrailActive={setTrailActive} setTrailCount={setTrailCount}
+            savedPoses={savedPoses} handleSavePose={handleSavePose} handleGoToPose={handleGoToPose}
+            handleDeletePose={handleDeletePose} handlePlayAll={handlePlayAll}
+          />
 
-                  {modelReady && (
-                    <div className="absolute pointer-events-none" style={{ top: 16, left: 16, width: 180, height: 180, zIndex: 25 }}>
-                      <div
-                        className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2.5 py-1.5 rounded-b-xl"
-                        style={{ background: "rgba(10,14,26,0.88)", borderTop: `1px solid rgba(28,35,64,0.8)` }}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <Activity size={9} color={C.accent} />
-                          <span style={{ fontSize: 9, fontFamily: "monospace", color: C.sub, fontWeight: 600, letterSpacing: "0.05em" }}>PATH VIEW</span>
-                        </div>
-                        {trailActive && (
-                          <div className="flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}`, animation: "pulse 1s infinite" }} />
-                            <span style={{ fontSize: 8, color: C.red, fontFamily: "monospace" }}>REC</span>
-                          </div>
-                        )}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <JointValueBar joints={joints} />
+            <div className="flex-1 min-h-0 p-4">
+              <div className="w-full h-full rounded-2xl overflow-hidden relative" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div ref={viewerRef} className="w-full h-full" />
+                {!modelReady && !modelError && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.sub }}>
+                    กำลังโหลดโมเดล 3D...
+                  </div>
+                )}
+                {modelError && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: C.red }}>
+                    โหลดโมเดล 3D ไม่สำเร็จ
+                  </div>
+                )}
+
+                {modelReady && (
+                  <div className="absolute pointer-events-none" style={{ top: 16, left: 16, width: 180, height: 180, zIndex: 25 }}>
+                    <div
+                      className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-2.5 py-1.5 rounded-b-xl"
+                      style={{ background: "rgba(10,14,26,0.88)", borderTop: `1px solid rgba(28,35,64,0.8)` }}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Activity size={9} color={C.accent} />
+                        <span style={{ fontSize: 9, fontFamily: "monospace", color: C.sub, fontWeight: 600, letterSpacing: "0.05em" }}>PATH VIEW</span>
                       </div>
+                      {trailActive && (
+                        <div className="flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: C.red, boxShadow: `0 0 4px ${C.red}`, animation: "pulse 1s infinite" }} />
+                          <span style={{ fontSize: 8, color: C.red, fontFamily: "monospace" }}>REC</span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
