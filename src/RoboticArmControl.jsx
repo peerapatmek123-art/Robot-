@@ -958,8 +958,7 @@ function LearnPage() {
 }
 
 // ---------------------------------------------------------------------------
-// CONTROL PAGE — reorganized per wireframe:
-// Home button → Motion type → Motion Trail toggle → play/loop/pause → pose list
+// CONTROL PAGE
 // ---------------------------------------------------------------------------
 function ControlPanel({
   modelReady, isMoving, isPlayingAll, handleHome,
