@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
-import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation, Home as HomeIcon, Save, Trash2, PlayCircle, BookMarked } from "lucide-react";
+import { Bot, Wifi, ChevronDown, Move as MoveIcon, Navigation, Home as HomeIcon, Save, Trash2, PlayCircle, BookMarked, Repeat, Square } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -748,35 +748,40 @@ function useArmScene(containerRef, joints, wireframe, onJointDelta, onIkDrag, sc
       const HIT_PADDING = 2.0;
 
 
+      // ลูกศร 2 หัว (บวก/ลบ) ต่อแกน ตามที่ขอ — มองเห็นเป็นเส้นตรงมีหัวลูกศรทั้ง 2 ปลาย
+      // เช่น แกน X: ◀───────▶ ลากจากปลายไหนก็ได้ ค่า axis เดียวกัน (แค่ทิศทาง delta ต่างเครื่องหมาย)
       function makeArrow(dir, color, axis) {
-        const shaftLen = gizmoLen * 0.7;
-        const headLen = gizmoLen * 0.3;
-        const shaftRadius = gizmoLen * 0.03;
-        const headRadius = gizmoLen * 0.09;
+        const shaftLen = gizmoLen * 1.3;
+        const headLen = gizmoLen * 0.28;
+        const shaftRadius = gizmoLen * 0.025;
+        const headRadius = gizmoLen * 0.08;
         const mat = new THREE.MeshBasicMaterial({ color, depthTest: false });
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLen, 8), mat);
-        shaft.position.y = shaftLen / 2;
-        const head = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLen, 10), mat);
-        head.position.y = shaftLen + headLen / 2;
 
-        // hit-box โปร่งใสครอบทั้งแกน (หนากว่าของจริงมาก) ใช้แค่สำหรับ raycast ไม่ได้ render ให้เห็น
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLen, 8), mat);
+
+        const headPos = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLen, 10), mat);
+        headPos.position.y = shaftLen / 2 + headLen / 2;
+
+        const headNeg = new THREE.Mesh(new THREE.ConeGeometry(headRadius, headLen, 10), mat);
+        headNeg.position.y = -(shaftLen / 2 + headLen / 2);
+        headNeg.rotation.x = Math.PI; // หมุนกลับหัวให้ปลายแหลมชี้ออกทางลบ
+
+        // hit-box โปร่งใสครอบทั้งเส้น (หนากว่าของจริง) ใช้แค่ raycast ไม่ได้ render ให้เห็น
+        const totalLen = shaftLen + headLen * 2;
         const hitMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, depthTest: false });
-        const hitBox = new THREE.Mesh(
-          new THREE.CylinderGeometry(shaftRadius * HIT_PADDING, headRadius * HIT_PADDING, gizmoLen, 10),
-          hitMat
-        );
-        hitBox.position.y = gizmoLen / 2;
+        const hitBox = new THREE.Mesh(new THREE.CylinderGeometry(shaftRadius * HIT_PADDING, shaftRadius * HIT_PADDING, totalLen, 10), hitMat);
         hitBox.renderOrder = 998;
 
         const grp = new THREE.Group();
-        grp.add(shaft, head, hitBox);
+        grp.add(shaft, headPos, headNeg, hitBox);
         grp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
         grp.renderOrder = 999;
         const userData = { axis };
         shaft.userData = userData;
-        head.userData = userData;
+        headPos.userData = userData;
+        headNeg.userData = userData;
         hitBox.userData = userData;
-        return { grp, pickables: [shaft, head, hitBox], mats: [mat], baseColors: [new THREE.Color(color)] };
+        return { grp, pickables: [shaft, headPos, headNeg, hitBox], mats: [mat], baseColors: [new THREE.Color(color)] };
       }
 
       s.pickables = [];
@@ -1196,6 +1201,62 @@ export default function RoboticArmControl() {
     setSavedPoses((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  // ---- เล่นท่าที่บันทึกไว้ทั้งหมดตามลำดับ (Play / Loop / Stop) ----
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLooping, setIsLooping] = useState(false);
+  const isPlayingRef = useRef(false);
+  const isLoopingRef = useRef(false);
+  const playIndexRef = useRef(0);
+  const savedPosesRef = useRef(savedPoses);
+  useEffect(() => { savedPosesRef.current = savedPoses; }, [savedPoses]);
+  useEffect(() => { isLoopingRef.current = isLooping; }, [isLooping]);
+
+  const playStep = useCallback(() => {
+    if (!isPlayingRef.current) return;
+    const list = savedPosesRef.current;
+    if (!list || list.length === 0) {
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+      return;
+    }
+    const idx = playIndexRef.current;
+    const pose = list[idx];
+    setTargets(pose.joints);
+    runFromHome(pose.joints, motionType, () => {
+      const fk = forwardKinematics(pose.joints.j1, pose.joints.j2, pose.joints.j3);
+      ikTargetRef.current = fk;
+      setIkTarget(fk);
+      if (!isPlayingRef.current) return; // กด Stop ระหว่างเคลื่อนที่ไปท่านี้ — จบแค่ท่านี้แล้วหยุด
+      const nextIdx = idx + 1;
+      if (nextIdx < list.length) {
+        playIndexRef.current = nextIdx;
+        playStep();
+      } else if (isLoopingRef.current) {
+        playIndexRef.current = 0;
+        playStep();
+      } else {
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+      }
+    });
+  }, [motionType, runFromHome]);
+
+  const handlePlay = useCallback(() => {
+    if (moving || isPlayingRef.current || savedPoses.length === 0) return;
+    isPlayingRef.current = true;
+    setIsPlaying(true);
+    playIndexRef.current = 0;
+    playStep();
+  }, [moving, savedPoses.length, playStep]);
+
+  // หยุดเล่น — ปล่อยให้ท่าที่กำลังเคลื่อนที่อยู่จบ tween ปัจจุบันก่อน แล้วจะไม่ไปท่าถัดไป
+  const handleStop = useCallback(() => {
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+  }, []);
+
+  useEffect(() => () => { isPlayingRef.current = false; }, []);
+
   useEffect(() => () => { if (animRef.current) cancelAnimationFrame(animRef.current); }, []);
 
   // ถ้ารันในแอป Electron จะมี window.electronAPI ให้ใช้จริง
@@ -1520,6 +1581,53 @@ export default function RoboticArmControl() {
             <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5 shrink-0" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
               <BookMarked size={14} color={C.accent} />
               <span className="text-xs font-semibold" style={{ color: C.text }}>Pose Library</span>
+            </div>
+
+            {/* ปุ่มเล่น / เล่นวนซ้ำ / หยุด — เล่นทุกท่าที่บันทึกไว้ตามลำดับ */}
+            <div className="flex items-center gap-1.5 px-4 pt-3 pb-3 shrink-0" style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+              <button
+                onClick={handlePlay}
+                disabled={isPlaying || moving || !modelReady || savedPoses.length === 0}
+                title="เล่นท่าทั้งหมดตามลำดับ"
+                className="flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-semibold transition-colors"
+                style={{
+                  background: isPlaying ? C.panelAlt : C.accent,
+                  color: isPlaying ? C.sub : "#fff",
+                  border: `1px solid ${isPlaying ? C.borderSoft : C.accent}`,
+                  cursor: isPlaying || moving || !modelReady || savedPoses.length === 0 ? "default" : "pointer",
+                  opacity: isPlaying || moving || !modelReady || savedPoses.length === 0 ? 0.55 : 1,
+                }}
+              >
+                <PlayCircle size={13} />
+                {isPlaying ? "กำลังเล่น..." : "เล่น"}
+              </button>
+              <button
+                onClick={() => setIsLooping((v) => !v)}
+                title="เล่นวนซ้ำ"
+                className="flex items-center justify-center rounded-lg px-2.5 py-1.5 transition-colors"
+                style={{
+                  background: isLooping ? C.accentSoft : C.panelAlt,
+                  color: isLooping ? C.accent : C.sub,
+                  border: `1px solid ${isLooping ? C.accent : C.borderSoft}`,
+                }}
+              >
+                <Repeat size={14} />
+              </button>
+              <button
+                onClick={handleStop}
+                disabled={!isPlaying}
+                title="หยุด"
+                className="flex items-center justify-center rounded-lg px-2.5 py-1.5 transition-colors"
+                style={{
+                  background: C.panelAlt,
+                  color: isPlaying ? C.red : C.subDim,
+                  border: `1px solid ${C.borderSoft}`,
+                  cursor: isPlaying ? "pointer" : "default",
+                  opacity: isPlaying ? 1 : 0.5,
+                }}
+              >
+                <Square size={13} />
+              </button>
             </div>
 
             {/* บันทึกท่าปัจจุบัน */}
