@@ -1,7 +1,7 @@
 {
   "name": "robot-arm-control",
   "version": "1.0.0",
-  "description": "5-DOF Robotic Arm Control - โปรแกรมควบคุมแขนกล 5 แกนต้นทุนต่ำ",
+  "description": "ARM-ROBOT_LAB - โปรแกรมควบคุมแขนกล 5 แกนต้นทุนต่ำ",
   "author": "Low-Cost RobotArm Team",
   "private": true,
   "main": "electron/main.js",
