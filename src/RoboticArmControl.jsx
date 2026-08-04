@@ -4,7 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import robotModel from "./assets/arm_robotics.glb";
 import {
   Bot, Wifi, ChevronDown, Home as HomeIcon, Move, Save, Trash2,
-  Play, Pause, Repeat, Activity, RotateCcw, BookOpen,
+  Play, Pause, Repeat, Activity, RotateCcw, BookOpen, Send, CheckCircle, AlertCircle,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -1040,6 +1040,7 @@ function ControlPanel({
   jointInputs, handleJointInputChange, handleMove,
   trailActive, trailControlRef, setTrailActive, setTrailCount,
   savedPoses, handleSavePose, handleGoToPose, handleDeletePose, handlePlayAll,
+  connected, handleSendSerial, serialStatus,
 }) {
   return (
     <div
@@ -1252,6 +1253,66 @@ function ControlPanel({
           <Move size={14} />
           {isMoving && !isPlayingAll ? "กำลังเคลื่อนที่..." : `Move (${motionType})`}
         </button>
+
+        {/* ─── Send to ESP32 ─── */}
+        <div className="flex flex-col gap-1.5 pt-3" style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+          <div className="text-[10px] font-semibold tracking-wide" style={{ color: C.subDim }}>SEND TO ESP32</div>
+
+          {/* ปุ่มส่งแต่ละข้อต่อแยกกัน */}
+          <div className="grid grid-cols-5 gap-1">
+            {["j1", "j2", "j3", "j4", "j5"].map((key, i) => (
+              <button
+                key={key}
+                onClick={() => handleSendSerial(key)}
+                disabled={!connected}
+                title={`ส่งเฉพาะ J${i + 1} = ${jointInputs[key]}${key === "j5" ? "%" : "°"}`}
+                className="flex flex-col items-center justify-center py-2 rounded-lg text-[10px] font-semibold transition-colors"
+                style={{
+                  background: !connected ? C.panelAlt : "rgba(59,108,246,0.15)",
+                  color: !connected ? C.subDim : C.accent,
+                  border: `1px solid ${!connected ? C.borderSoft : "rgba(59,108,246,0.35)"}`,
+                  cursor: !connected ? "default" : "pointer",
+                }}
+              >
+                <Send size={9} style={{ marginBottom: 2 }} />
+                J{i + 1}
+              </button>
+            ))}
+          </div>
+
+          {/* ปุ่มส่งทุกข้อต่อพร้อมกัน */}
+          <button
+            onClick={() => handleSendSerial("all")}
+            disabled={!connected}
+            className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-[13px] font-semibold transition-colors"
+            style={{
+              background: !connected ? C.panelAlt : "rgba(34,197,94,0.14)",
+              color: !connected ? C.subDim : C.green,
+              border: `1px solid ${!connected ? C.borderSoft : "rgba(34,197,94,0.35)"}`,
+              cursor: !connected ? "default" : "pointer",
+            }}
+          >
+            <Send size={14} />
+            {!connected ? "ยังไม่เชื่อมต่อ" : "ส่งทุกข้อต่อ (j1–j5)"}
+          </button>
+
+          {/* สถานะผลการส่ง */}
+          {serialStatus && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px]"
+              style={{
+                background: serialStatus.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+                border: `1px solid ${serialStatus.ok ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+                color: serialStatus.ok ? C.green : C.red,
+              }}
+            >
+              {serialStatus.ok
+                ? <CheckCircle size={11} />
+                : <AlertCircle size={11} />}
+              <span>{serialStatus.msg}</span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1486,6 +1547,57 @@ export default function RoboticArmControl() {
     setSavedPoses((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  // ─── Serial send ────────────────────────────────────────────────────────────
+  const [serialStatus, setSerialStatus] = useState(null); // { ok, msg }
+  const serialStatusTimerRef = useRef(null);
+
+  const handleSendSerial = useCallback(async (target) => {
+    if (!window.electronAPI?.sendSerial) {
+      setSerialStatus({ ok: false, msg: "ไม่พบ electronAPI.sendSerial" });
+      return;
+    }
+
+    const cur = jointsRef.current;
+
+    // สร้าง JSON payload ตามโปรโตคอลที่ ESP32 รองรับ
+    // ส่งทุกข้อต่อ: {"type":"joints","j1":0,"j2":10,...}
+    // ส่งเฉพาะข้อต่อ: {"type":"joints","j1":45}
+    let payload;
+    if (target === "all") {
+      payload = {
+        type: "joints",
+        j1: Math.round(cur.j1 * 100) / 100,
+        j2: Math.round(cur.j2 * 100) / 100,
+        j3: Math.round(cur.j3 * 100) / 100,
+        j4: Math.round(cur.j4 * 100) / 100,
+        j5: Math.round(cur.j5 * 100) / 100,
+      };
+    } else {
+      // ส่งเฉพาะข้อต่อเดียว
+      const val = Math.round(cur[target] * 100) / 100;
+      payload = { type: "joints", [target]: val };
+    }
+
+    const jsonStr = JSON.stringify(payload);
+
+    try {
+      const res = await window.electronAPI.sendSerial(jsonStr);
+      const ok = res?.ok !== false;
+      const label = target === "all"
+        ? "j1–j5 ทั้งหมด"
+        : `${target.toUpperCase()} = ${payload[target]}${target === "j5" ? "%" : "°"}`;
+      setSerialStatus({ ok, msg: ok ? `ส่งแล้ว: ${label}` : `ส่งไม่สำเร็จ: ${res?.error ?? "unknown"}` });
+    } catch (err) {
+      setSerialStatus({ ok: false, msg: `Error: ${err?.message ?? String(err)}` });
+    }
+
+    // ล้างสถานะหลัง 3 วินาที
+    if (serialStatusTimerRef.current) clearTimeout(serialStatusTimerRef.current);
+    serialStatusTimerRef.current = setTimeout(() => setSerialStatus(null), 3000);
+  }, []);
+
+  useEffect(() => () => { if (serialStatusTimerRef.current) clearTimeout(serialStatusTimerRef.current); }, []);
+
   const handleIkDrag = useCallback((axis, delta) => {
     const cur = jointsRef.current;
     const clampDeg = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -1665,6 +1777,7 @@ export default function RoboticArmControl() {
             trailActive={trailActive} trailControlRef={trailControlRef} setTrailActive={setTrailActive} setTrailCount={setTrailCount}
             savedPoses={savedPoses} handleSavePose={handleSavePose} handleGoToPose={handleGoToPose}
             handleDeletePose={handleDeletePose} handlePlayAll={handlePlayAll}
+            connected={connected} handleSendSerial={handleSendSerial} serialStatus={serialStatus}
           />
 
           <div className="flex-1 min-h-0 flex flex-col">
