@@ -121,15 +121,14 @@ function solveIK(x, y, z, prevJoints) {
   if (validOnes.length === 0) {
     // ไม่มี configuration ไหนอยู่ในขอบเขตพอดี ใช้ตัวแรก (พฤติกรรมเดิม) แล้ว clamp ต่อไป
     chosen = candidates[0];
-  } else if (validOnes.length === 1 || !prevJoints) {
-    chosen = validOnes[0];
   } else {
-    // มีทั้ง 2 configuration ที่ไปถึงได้ — เลือกอันที่ "ใกล้ท่าปัจจุบัน" ที่สุดในปริภูมิมุมข้อต่อ
-    // (แทนที่จะเลือกตัวแรกที่เจอแบบสุ่ม) กันไม่ให้ข้อศอก/ไหล่สลับ configuration กะทันหัน
-    // ระหว่างลาก ซึ่งเป็นสาเหตุหลักที่ทำให้ท่าทางดูกระโดด/ไม่ต่อเนื่อง/ผิดธรรมชาติ
-    const jointDist = (c) =>
-      Math.abs(c.j2 - prevJoints.j2) + Math.abs(c.j3 - prevJoints.j3) + Math.abs(c.j4 - prevJoints.j4);
-    chosen = jointDist(validOnes[0]) <= jointDist(validOnes[1]) ? validOnes[0] : validOnes[1];
+    // เลือก Configuration A (candidates[0]) ก่อนเสมอถ้าอยู่ในขอบเขต — ตรวจสอบแล้วด้วยการทดสอบ
+    // ย้อนกลับผ่าน forwardKinematics ว่า A คือ configuration ที่ตรงกับธรรมชาติจริงของแขนตัวนี้
+    // (ที่ HOME และท่าเอื้อมไปข้างหน้าปกติ A ให้ผลตรงกับ FK เป๊ะ ส่วน B เป็นคำตอบมิเรอร์ที่พับ
+    // ข้อศอกไปทางตรงข้ามจนได้ท่าที่หักงอผิดธรรมชาติ) — เดิมเลือกตาม "ใกล้ท่าก่อนหน้าที่สุด" ซึ่ง
+    // บางครั้งหลงไปติดฝั่ง B แล้ว "ใกล้ B ก่อนหน้า" ของมันเองเรื่อยๆ จนค้างอยู่ฝั่งที่ผิดทั้ง sequence
+    // จึงใช้ B ก็ต่อเมื่อ A ไม่อยู่ในขอบเขตจริงๆ เท่านั้น (fallback)
+    chosen = validOnes.includes(candidates[0]) ? candidates[0] : validOnes[0];
   }
 
   return {
