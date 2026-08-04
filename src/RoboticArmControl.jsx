@@ -1011,21 +1011,26 @@ export default function RoboticArmControl() {
     if (!s || !s.ready) return;
     const tx = parseFloat(x) || 0, ty = parseFloat(y) || 0, tz = parseFloat(z) || 0;
 
-    // สูตร analytic ใช้แค่เป็น "seed เริ่มต้น" เพื่อช่วยให้ CCD ลู่เข้าเร็ว/ท่าดูเป็นธรรมชาติ
-    // เท่านั้น — ไม่ใช้เป็นตัวตัดสิน reachability อีกต่อไป เพราะสมมติฐานทิศทาง L4 ของมัน
-    // ทำให้ปฏิเสธตำแหน่งที่จริงๆ ไปถึงได้สบายๆ (false positive unreachable) เช่น ตำแหน่งที่
-    // แขนอยู่ตรงนั้นอยู่แล้วแทบไม่ขยับเลยก็ยังโดนปฏิเสธ — ตอนนี้ให้ CCD (อิงตำแหน่งปลายนิ้วจริง)
-    // เป็นผู้ตัดสินเพียงผู้เดียวว่าไปถึงได้จริงหรือไม่
+    // ให้สูตร analytic เป็นคำตอบหลักตรงๆ เมื่อหาคำตอบได้ (ไม่ผ่าน CCD ต่อ) — เพราะ CCD ไล่จาก
+    // ปลาย (wrist) ก่อนเสมอ ทำให้เวลามีค่าคลาดเคลื่อนเล็กน้อยให้แก้ มันมักจะ "โยนภาระ" ไปที่
+    // ข้อมือ/ข้อศอกเกือบทั้งหมด ปล่อยให้ไหล่ (J2) แทบไม่ขยับเลย ทำให้ท่าดูเบี้ยว/ไม่เป็นธรรมชาติ
+    // (เช่น ดึงไปข้างหน้าไกลๆ แล้วไหล่ไม่ยอมหมุนตาม มีแต่ข้อศอก/ข้อมือหักโหมทำงานแทน)
+    // ตอนนี้ตราบใดที่ analytic หาคำตอบได้ (ซึ่งคำนวณสัดส่วนมุมไหล่/ข้อศอกถูกต้องตามเรขาคณิตอยู่แล้ว
+    // และค่า L4 ที่ใช้ก็แม่นขึ้นแล้วจากการคาลิเบรตรอบล่าสุด) จะใช้ผลนั้นตรงๆ เลย
+    // CCD จะถูกเรียกใช้ก็ต่อเมื่อ analytic หาคำตอบไม่ได้เท่านั้น (fallback จริงๆ)
     const rough = solveIK(tx, ty, tz, jointsRef.current);
     const modelScale = s.modelScale || 1;
+    let result;
     if (rough.ok) {
       s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
+      const tip = s.getTipMidWorld(new THREE.Vector3());
+      result = { j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4, reachedDist: tip.distanceTo(new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale)) };
     } else {
       s.setChainDegrees(jointsRef.current); // seed จากท่าปัจจุบันแทน ให้ CCD ไล่เอง
+      const targetWorld = new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale);
+      result = s.numericIK(targetWorld, 30);
     }
-    const targetWorld = new THREE.Vector3(tx, ty, tz).multiplyScalar(modelScale);
-    const result = s.numericIK(targetWorld, rough.ok ? 8 : 30);
-    if (result.reachedDist > 0.015 * modelScale) {
+    if (result.reachedDist > 0.02 * modelScale) {
       setIkError("ตำแหน่งอยู่นอกพิสัยของแขนกล (Unreachable)");
       return;
     }
@@ -1066,26 +1071,36 @@ export default function RoboticArmControl() {
 
     const modelScale = s.modelScale || 1;
 
-    // seed จากผลลัพธ์ analytic (เลือก configuration ข้อศอกที่เป็นธรรมชาติให้แล้ว) ทุกครั้งที่ลาก
-    // แทนที่จะปล่อยให้ CCD ไล่ต่อจาก "ท่าปัจจุบัน" อิสระไปเรื่อยๆ ซึ่งสะสมความเบี้ยวจนข้อศอก/ไหล่
-    // ไปอยู่ใน configuration ที่ผิดธรรมชาติได้เมื่อลากต่อเนื่องนานๆ — CCD ทำหน้าที่แค่ "แก้ค่า
-    // คลาดเคลื่อนเล็กน้อย" จากสมมติฐานทิศทาง L4 ของสูตร analytic เท่านั้น ไม่ใช่หาท่าทางเอง
+    // ใช้คำตอบ analytic ตรงๆ เมื่อหาได้ (ไม่ผ่าน CCD ต่อ) — CCD ไล่จากปลาย (wrist) ก่อนเสมอ
+    // ทำให้เวลามีคลาดเคลื่อนเล็กน้อยให้แก้ มันมักโยนภาระไปที่ข้อมือ/ข้อศอกเกือบหมด ปล่อยให้ไหล่
+    // (J2) แทบไม่ขยับเลย ดึงไปข้างหน้าไกลๆ แล้วไหล่ไม่ยอมหมุนตาม — ตอนนี้ตราบใด analytic หา
+    // คำตอบได้ (สัดส่วนมุมไหล่/ข้อศอกถูกต้องตามเรขาคณิตอยู่แล้ว + ค่า L4 แม่นขึ้นจากคาลิเบรตล่าสุด)
+    // จะใช้ตรงๆ เลย ไม่ปล่อยให้ CCD มาบิดสัดส่วนอีก — CCD เป็น fallback เฉพาะตอน analytic หาไม่ได้
     const rough = solveIK(
       parseFloat(next.x) || 0,
       parseFloat(next.y) || 0,
       parseFloat(next.z) || 0,
       jointsRef.current
     );
+    let result;
     if (rough.ok) {
       s.setChainDegrees({ j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4 });
+      const tip = s.getTipMidWorld(new THREE.Vector3());
+      const targetWorld = new THREE.Vector3(
+        parseFloat(next.x) || 0,
+        parseFloat(next.y) || 0,
+        parseFloat(next.z) || 0
+      ).multiplyScalar(modelScale);
+      result = { j1: rough.j1, j2: rough.j2, j3: rough.j3, j4: rough.j4, reachedDist: tip.distanceTo(targetWorld) };
+    } else {
+      const targetWorld = new THREE.Vector3(
+        parseFloat(next.x) || 0,
+        parseFloat(next.y) || 0,
+        parseFloat(next.z) || 0
+      ).multiplyScalar(modelScale);
+      // analytic หาคำตอบไม่ได้ — ให้ CCD ไล่จากท่าปัจจุบันแทน (fallback จริงๆ)
+      result = s.numericIK(targetWorld, 14);
     }
-    const targetWorld = new THREE.Vector3(
-      parseFloat(next.x) || 0,
-      parseFloat(next.y) || 0,
-      parseFloat(next.z) || 0
-    ).multiplyScalar(modelScale);
-    // CCD แค่ไม่กี่รอบพอ เพราะ seed จาก analytic ใกล้คำตอบอยู่แล้ว ไม่ต้องไล่ไกล
-    const result = s.numericIK(targetWorld, rough.ok ? 5 : 14);
 
     // ซิงก์ ikTarget กับ "ตำแหน่งที่ไปถึงจริง" เสมอ (ไม่ใช่ตำแหน่งที่ลากขอไว้ดิบๆ)
     // เดิมถ้าไปไม่ถึงจะ setChainDegrees สะบัดกลับไปตำแหน่งก่อนหน้าทันที แล้วพอลากกลับเข้า
