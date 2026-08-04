@@ -34,6 +34,26 @@ const L2 = 0.105; // แขนบน ไหล่-ข้อศอก (m)
 const L3 = 0.096; // แขนล่าง ข้อศอก-ข้อมือ (m)
 
 const HOME = { j1: 0, j2: 0, j3: 90, j4: 90, j5: 0 };
+const SAVED_POSES_KEY = "anr-robot-studio:saved-poses";
+
+function loadSavedPoses() {
+  try {
+    const raw = window.localStorage.getItem(SAVED_POSES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedPoses(poses) {
+  try {
+    window.localStorage.setItem(SAVED_POSES_KEY, JSON.stringify(poses));
+  } catch {
+    // storage unavailable — ignore, poses just won't survive a restart
+  }
+}
 
 /** solveIK3 — Inverse Kinematics แบบง่าย (2-link planar + ฐานหมุน) หา J1/J2/J3 */
 function solveIK3(x, y, z) {
@@ -963,7 +983,7 @@ function LearnPage() {
 function ControlPanel({
   modelReady, isMoving, isPlayingAll, handleHome,
   motionType, setMotionType,
-  viaInputs, handleViaInputChange,
+  viaInputs, handleViaInputChange, handleCaptureVia, handleClearVia,
   jointInputs, handleJointInputChange, handleMove,
   trailActive, trailControlRef, setTrailActive, setTrailCount,
   savedPoses, handleSavePose, handleGoToPose, handleDeletePose, handlePlayAll,
@@ -1011,7 +1031,7 @@ function ControlPanel({
       {motionType === "CIRC" && (
         <div>
           <div className="text-[10px] font-semibold tracking-wide mb-1.5" style={{ color: C.subDim }}>VIA POINT (ม., ไม่บังคับ)</div>
-          <div className="flex gap-1.5">
+          <div className="flex gap-1.5 mb-1.5">
             {["x", "y", "z"].map((axis) => (
               <input
                 key={axis}
@@ -1024,6 +1044,30 @@ function ControlPanel({
                 style={{ background: C.panelAlt, border: `1px solid ${C.borderSoft}`, color: C.text }}
               />
             ))}
+          </div>
+          <div className="flex gap-1.5">
+            <button
+              onClick={handleCaptureVia}
+              disabled={!modelReady || isMoving || isPlayingAll}
+              className="flex-1 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+              style={{
+                background: C.accentSoft, color: C.accent, border: `1px solid ${C.borderSoft}`,
+                opacity: !modelReady || isMoving || isPlayingAll ? 0.5 : 1,
+              }}
+            >
+              ใช้ตำแหน่งปัจจุบัน
+            </button>
+            <button
+              onClick={handleClearVia}
+              disabled={isMoving || isPlayingAll}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+              style={{
+                background: C.panelAlt, color: C.sub, border: `1px solid ${C.borderSoft}`,
+                opacity: isMoving || isPlayingAll ? 0.5 : 1,
+              }}
+            >
+              ล้าง
+            </button>
           </div>
         </div>
       )}
@@ -1191,6 +1235,14 @@ export default function RoboticArmControl() {
       setViaInputs((prev) => ({ ...prev, [axis]: value }));
     }
   }, []);
+  const handleCaptureVia = useCallback(() => {
+    const cur = jointsRef.current;
+    const p = fk3(cur.j1, cur.j2, cur.j3);
+    setViaInputs({ x: p.x.toFixed(3), y: p.y.toFixed(3), z: p.z.toFixed(3) });
+  }, []);
+  const handleClearVia = useCallback(() => {
+    setViaInputs({ x: "", y: "", z: "" });
+  }, []);
 
   useEffect(() => {
     setJointInputs({
@@ -1346,7 +1398,12 @@ export default function RoboticArmControl() {
 
   const DEG_PER_UNIT = 400;
 
-  const [savedPoses, setSavedPoses] = useState([]);
+  const [savedPoses, setSavedPoses] = useState(() => loadSavedPoses());
+
+  // persist to localStorage any time the saved pose list changes, so poses survive app restarts
+  useEffect(() => {
+    persistSavedPoses(savedPoses);
+  }, [savedPoses]);
 
   const handleSavePose = useCallback(() => {
     setSavedPoses((prev) => [...prev, { id: Date.now(), name: `ท่าที่ ${prev.length + 1}`, joints: { ...jointsRef.current } }]);
@@ -1499,6 +1556,7 @@ export default function RoboticArmControl() {
               modelReady={modelReady} isMoving={isMoving} isPlayingAll={isPlayingAll} handleHome={handleHome}
               motionType={motionType} setMotionType={setMotionType}
               viaInputs={viaInputs} handleViaInputChange={handleViaInputChange}
+              handleCaptureVia={handleCaptureVia} handleClearVia={handleClearVia}
               jointInputs={jointInputs} handleJointInputChange={handleJointInputChange} handleMove={handleMove}
               trailActive={trailActive} trailControlRef={trailControlRef} setTrailActive={setTrailActive} setTrailCount={setTrailCount}
               savedPoses={savedPoses} handleSavePose={handleSavePose} handleGoToPose={handleGoToPose}
